@@ -125,5 +125,26 @@ Anything not explicitly permitted in the config is forbidden.
 | `docs/DECISION_LOG_SCHEMA.md` | Format of the hash-chained decision ledger |
 | `docs/SESSION_00_PROBE.md` | The capability-probe runbook |
 | `docs/COMPETITION_BRIEF.md` | Scoring, field, timeline, team structure |
+| `CONTEXT.md` | Project state: what is decided, measured, and still open |
+| `engine/` | Deterministic core. No network I/O, no free text, no model |
+| `tests/` | 73 tests. The evidence for "the model cannot break the rules" |
 
 If this file and one of those disagree, those win — and fix this file.
+
+---
+
+## 8. Before you change engine/ or config/
+
+Run the suite: `python3 -m pytest tests/ -q`. It should report **73 passed**.
+
+These are not regression cover. Each test names a rule and demonstrates the
+engine enforcing it, so a failure means either the code stopped enforcing
+something or a limit changed without the reasoning being updated. Both need a
+human, not a fix to the test.
+
+Two invariants are enforced in code as well as tested, and must stay that way:
+
+- `risk_gate.evaluate_entry` asserts the returned quantity never exceeds the
+  proposed one. The gate may only tighten.
+- `config.RiskConfig` refuses to load rather than defaulting a missing limit.
+  Absence is not permission.

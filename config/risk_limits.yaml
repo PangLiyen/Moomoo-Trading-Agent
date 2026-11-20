@@ -81,7 +81,24 @@ account_integrity:
   on_unexplained_position: flatten_and_halt
   # Baseline. Anything outside this set at session start is foreign.
   known_foreign_order_ids: ["3128921", "3128965"]
+  # Our own orders from the Session 00 capability probe, placed by a supervised
+  # operator BEFORE the ledger existed. They are ours, not foreign, and saying
+  # so here is more accurate than adding them to the foreign list. Without this
+  # the foreign-writer halt fires on our own probe activity.
+  known_own_order_ids:
+    - "3128953"   # SPY buy  limit 716.75, filled 715.83  S00-PROBE-001
+    - "3128955"   # SPY buy  limit 709.50, FILLED 10:25:18 S00-PROBE-002
+    - "3128956"   # SPY sell limit 715.30, filled 715.655  S00-PROBE-001-SELL
+    - "3129023"   # QQQ buy  limit 630.94, cancelled       S00-CANCEL-TEST
+    - "3129367"   # SPY sell limit 704.85, filled 706.425  S00-PROBE-002-FLATTEN
   expected_flat_at_session_start: true
+  # STRUCTURAL GAP, not a config problem. run_cycle.py has no execution path,
+  # so an order submitted by a supervised operator leaves no ledger record and
+  # is indistinguishable from a foreign write. Until the executor writes its
+  # own order records at submission time, every manual order needs declaring
+  # here. That is a workaround with a shelf life: if this list is still growing
+  # once the executor is live, something is submitting orders outside it.
+  manual_orders_require_declaration_until_executor_exists: true
 
 # ---------------------------------------------------------------------------
 # UNIVERSE
@@ -139,14 +156,28 @@ sizing:
 # derived from observed behaviour instead.
 # ---------------------------------------------------------------------------
 fees:
-  commission_per_filled_order_usd: 0.99
+  # MEASURED, and not yet a settled model. Two buy reservations were exactly
+  # limit + 0.99. One completed SELL was charged exactly 1.0000:
+  #     balance 99285.340 -> 99990.765 on a fill of 706.425
+  #     implied fee = 706.425 - 705.425 = 1.0000
+  # The API reports balance to 3 dp, so its worst rounding error is 0.0005 and
+  # the 0.01 gap is 20x that. Either buys and sells differ, or the 0.99
+  # reservation is an estimate that settles at 1.00.
+  #
+  # Cost modelling uses the HIGHER figure until a second sell settles the
+  # question. Understating fees biases toward taking trades that do not clear
+  # their own costs, which is the error that matters.
+  commission_per_filled_order_usd: 1.00
+  commission_buy_reservation_usd: 0.99    # what `hold` reserves at submission
+  commission_sell_measured_usd: 1.00      # what a sell actually settled at, n=1
+  commission_model_is_settled: false      # OPEN: needs a second sell to confirm
   charged_on: fill_only            # the resting unfilled order was NOT charged
   # The API reserves limit_price + commission in `hold` at submission, so the fee is
   # knowable BEFORE the fill, not only after. Pre-trade cost checks are therefore exact.
   reserved_in_hold_at_submission: true
   # Round-trip cost floor. Any setup whose expected move does not clear this by the
   # multiple below is not worth taking.
-  round_trip_cost_usd: 1.98
+  round_trip_cost_usd: 1.99       # 0.99 buy + 1.00 sell, both measured
   min_expected_edge_to_cost_ratio: 5.0
   # Consequence: small positions are fee-dominated. MEASURED round-trip cost on SPY,
   # commission + execution, against a 0.5*ATR20 reversion target (ATR20 assumed ~$7 —

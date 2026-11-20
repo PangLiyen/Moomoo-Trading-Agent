@@ -1,0 +1,4 @@
+# Runtime. Deliberately minimal — the engine core is stdlib plus a YAML parser.
+# Every dependency added here is a dependency a judge has to trust, and the
+# deterministic layer is the part of this project least worth outsourcing.
+PyYAML>=6.0

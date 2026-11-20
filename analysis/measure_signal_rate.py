@@ -13,18 +13,33 @@ timestamps), and answers four questions:
   PART D  EXPLORATORY ONLY -- what did the surviving signals do under the
           pre-committed exits? No position sizing, no portfolio constraints.
 
+With --extend three more measurement modes run after Parts A-D (the A-D
+output is unchanged whether or not the flag is present):
+
+  PART E  The same exit sim on every base signal, so the 22 regime-OK signals
+          can be compared with the 148 the joint filter removed.
+  PART F  The same signals run SEQUENTIALLY through the real portfolio limits
+          (3 concurrent, 1 index-broad, 6 entries/session, 300s apart) with
+          quantity from engine.sizing.size_position at $100,000 equity.
+  PART G  How far below the stop the stop exits actually closed, in ATR units.
+
+Parts E-G are measurement, not parameter selection. No strategy change has
+been made; nothing here feeds a config value.
+
 DEFINITIONS are imported from analysis/compute_indicators.py rather than
 restated, so a drift in one cannot silently disagree with the other: 5-minute
 RTH bars 09:35..15:55 ET (16:00 print dropped), bad-tick quarantine at
 10x median range / 1% wick, Wilder ATR20 seeded on the first 20 TRs, SMA20
 inclusive of the current close, entry window 10:00 <= t < 15:00 ET.
 
-Run:  python3 analysis/measure_signal_rate.py
+Run:  python3 analysis/measure_signal_rate.py            # Parts A-D
+      python3 analysis/measure_signal_rate.py --extend   # Parts A-G
 Also writes: analysis/signal_rate_output.json
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import statistics
 import sys
@@ -36,6 +51,7 @@ import yaml
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(ROOT))   # Part F imports engine.sizing / engine.config
 
 import compute_indicators as ci  # noqa: E402
 
@@ -48,6 +64,7 @@ STOP_ATR_MULT = 1.0
 TIME_STOP_MINUTES = 60
 SESSION_FLAT_MIN = 15 * 60 + 50   # 15:50 ET
 ROUND_TRIP_COST = 1.99            # config: 0.99 buy reservation + 1.00 measured sell
+START_EQUITY = 100_000.0          # Part F sizing equity, as instructed
 OUT = HERE / "signal_rate_output.json"
 
 
@@ -240,10 +257,399 @@ def simulate(bars: list[dict], idx: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# PARTS E-G -- measurement modes (--extend). Not parameter selection.
+# ---------------------------------------------------------------------------
+
+def _run_signals(sig_list, series, idx_by_sym):
+    """simulate() over a list of (symbol, bar); same rules as Part D."""
+    trades, opens = [], []
+    for sym, x in sig_list:
+        t = simulate(series[sym], idx_by_sym[sym][x["tk"]])
+        if t is None:
+            opens.append((sym, x))
+            continue
+        t["symbol"] = sym
+        t["entry_date"] = x["date"]
+        t["entry_et"] = x["hhmm"]
+        trades.append(t)
+    return trades, opens
+
+
+def _group_stats(trades, n_signals, n_open):
+    reasons: dict[str, int] = {}
+    for t in trades:
+        reasons[t["reason"]] = reasons.get(t["reason"], 0) + 1
+    wins = [t for t in trades if t["net"] > 0]
+    gross = sum(t["gross"] for t in trades)
+    fees = ROUND_TRIP_COST * len(trades)
+    net = sum(t["net"] for t in trades)
+    return {
+        "n_signals": n_signals,
+        "n_closed": len(trades),
+        "n_open": n_open,
+        "stop": reasons.get("STOP_HIT", 0),
+        "target": reasons.get("TARGET_HIT", 0),
+        "time": reasons.get("TIME_STOP", 0),
+        "session": reasons.get("SESSION_STOP", 0),
+        "wins": len(wins),
+        "win_rate_pct": 100.0 * len(wins) / len(trades) if trades else None,
+        "gross": gross,
+        "fees": fees,
+        "net": net,
+        "mean_net": net / len(trades) if trades else None,
+        "reasons": reasons,
+    }
+
+
+def part_e(b, series, idx_by_sym, spy_regime, min_atr, d_trades, d_opens):
+    """Ablation: joint filter ON vs regime OFF, same exits, 1 share each."""
+    regime_by_tk = {x["tk"]: x for x in spy_regime}
+    all_sigs = [(sym, x) for sym, r in b.items() for x in r["base"]]
+    joint_ids = {(sym, x["tk"]) for sym, r in b.items() for x in r["joint"]}
+    ok_sigs = [(s, x) for s, x in all_sigs if (s, x["tk"]) in joint_ids]
+    blocked_sigs = [(s, x) for s, x in all_sigs if (s, x["tk"]) not in joint_ids]
+    atr_sigs = [(sym, x) for sym, r in b.items() for x in r["atr_only"]]
+
+    regime_false = [x for _, x in all_sigs
+                    if not regime_by_tk.get(x["tk"], {}).get("regime_ok")]
+    atr_fail = [(s, x) for s, x in all_sigs
+                if x["atr20"] < min_atr[f"US.{s}"]]
+    regime_ok_but_atr_fail = [(s, x) for s, x in atr_fail
+                              if regime_by_tk.get(x["tk"], {}).get("regime_ok")]
+
+    ok_stats = _group_stats(d_trades, len(ok_sigs), len(d_opens))
+    blocked_trades, blocked_opens = _run_signals(blocked_sigs, series, idx_by_sym)
+    all_trades, all_opens = _run_signals(all_sigs, series, idx_by_sym)
+    atr_trades, atr_opens = _run_signals(atr_sigs, series, idx_by_sym)
+    blocked_stats = _group_stats(blocked_trades, len(blocked_sigs),
+                                 len(blocked_opens))
+    all_stats = _group_stats(all_trades, len(all_sigs), len(all_opens))
+    atr_stats = _group_stats(atr_trades, len(atr_sigs), len(atr_opens))
+
+    print("\n\nPART E -- REGIME FILTER ABLATION " + "-" * 62)
+    print("Same exits as Part D (stop -1.0 ATR, target SMA20, 60-min time stop,")
+    print("flat by 15:50, close fills), 1 share, $1.99 per trade. Groups are")
+    print("signal sets, not portfolios: no concurrency, cluster or entry caps.")
+    print("-" * 96 + "\n")
+    rows = [
+        (f"regime OK (joint, n={ok_stats['n_signals']})", ok_stats),
+        (f"removed by joint filter (n={len(blocked_sigs)})", blocked_stats),
+        (f"all base signals (n={len(all_sigs)})", all_stats),
+        (f"ATR gate only, regime off (n={len(atr_sigs)})", atr_stats),
+    ]
+    print(f"{'group':38}{'n':>5}{'closed':>8}{'open':>6}{'stop':>6}{'tgt':>5}"
+          f"{'time':>6}{'sess':>6}{'win%':>7}{'gross':>9}{'fees':>8}{'net':>9}"
+          f"{'mean':>8}")
+    for label, s in rows:
+        wr = f"{s['win_rate_pct']:.1f}" if s["win_rate_pct"] is not None else "n/a"
+        mn = f"{s['mean_net']:+.2f}" if s["mean_net"] is not None else "n/a"
+        print(f"{label:38}{s['n_signals']:>5}{s['n_closed']:>8}{s['n_open']:>6}"
+              f"{s['stop']:>6}{s['target']:>5}{s['time']:>6}{s['session']:>6}"
+              f"{wr:>7}{s['gross']:>+9.2f}{s['fees']:>8.2f}{s['net']:>+9.2f}"
+              f"{mn:>8}")
+    print(f"\nComposition of the {len(blocked_sigs)} group: {len(regime_false)} are "
+          f"regime-false (SPY <= SMA60); "
+          f"{len(regime_ok_but_atr_fail)} is regime-true but fails the ATR floor")
+    for s, x in regime_ok_but_atr_fail:
+        print(f"  {s} {x['date']} {x['hhmm']} ET  ATR20 {x['atr20']:.4f} < "
+              f"gate {min_atr[f'US.{s}']:.4f}")
+    print(f"ATR floor removes {len(atr_fail)} of {len(all_sigs)} base signals in total.")
+    print("Fees here are $1.99 x closed trades at 1 share, so they dominate a")
+    print("signal set this small; compare groups on gross and on win rate, not")
+    print("on net alone.")
+    print("\nReading: the blocked group is the counterfactual for the regime filter.")
+    print("If it outperforms the regime-OK group on this sample, the filter cost")
+    print("money here; that is a finding about this window, not a licence to change")
+    print("the rule (see the closing note).")
+    return {
+        "note": "measurement, not parameter selection",
+        "groups": {label: s for label, s in rows},
+        "blocked_composition": {
+            "regime_false": len(regime_false),
+            "regime_ok_but_atr_fail": len(regime_ok_but_atr_fail),
+            "atr_fail_total": len(atr_fail),
+        },
+        "blocked_trades": blocked_trades,
+    }
+
+
+def _exit_reason(bar, entry_dt, stop):
+    held = (datetime.strptime(f"{bar['date']} {bar['hhmm']}", "%Y-%m-%d %H:%M")
+            - entry_dt).total_seconds() / 60.0
+    if bar["mins"] >= SESSION_FLAT_MIN:
+        return "SESSION_STOP", held
+    if bar["c"] <= stop:
+        return "STOP_HIT", held
+    if bar["sma20"] is not None and bar["c"] >= bar["sma20"]:
+        return "TARGET_HIT", held
+    if held >= TIME_STOP_MINUTES:
+        return "TIME_STOP", held
+    return None, held
+
+
+def part_f(b, series, cfg_path, d_trades):
+    """Sequential simulation of the 22 joint signals through the real limits."""
+    from engine.config import RiskConfig
+    from engine.errors import RiskViolation
+    from engine.sizing import size_position
+
+    rcfg = RiskConfig.load(cfg_path)
+    raw = rcfg.raw
+    max_conc = int(raw["sizing"]["max_concurrent_positions"])
+    cluster_members = {m.split(".")[-1] for m in
+                       raw["universe"]["clusters"]["index_broad"]["members"]}
+    cluster_cap = int(raw["universe"]["clusters"]["index_broad"]
+                      ["max_concurrent_positions"])
+    max_entries = int(raw["frequency"]["max_entries_per_session"])
+    min_gap_s = int(raw["frequency"]["min_seconds_between_entries"])
+    buy_fee = float(raw["fees"]["commission_buy_reservation_usd"])
+    sell_fee = float(raw["fees"]["commission_per_filled_order_usd"])
+    stop_mult = float(raw["sizing"]["stop_distance_atr_mult"])
+
+    signals = {(sym, x["tk"]) for sym, r in b.items() for x in r["joint"]}
+    events: dict[int, list[tuple[str, int]]] = {}
+    for sym, bars in series.items():
+        for i, bar in enumerate(bars):
+            events.setdefault(bar["tk"], []).append((sym, i))
+
+    open_pos: dict[str, dict] = {}
+    realised = 0.0
+    session_date = None
+    entries_today = 0
+    last_entry_tk = None
+    taken, skipped = [], {}
+    last_close: dict[str, float] = {}
+    curve = [START_EQUITY]
+    peak, max_dd = START_EQUITY, 0.0
+
+    def skip(sym, tk, reason):
+        skipped[reason] = skipped.get(reason, 0) + 1
+        skipped.setdefault("_signals", []).append(
+            {"symbol": sym, "time_key": tk, "reason": reason})
+
+    for tk in sorted(events):
+        for sym, idx in sorted(events[tk]):
+            bar = series[sym][idx]
+            last_close[sym] = bar["c"]
+            if bar["date"] != session_date:
+                session_date = bar["date"]
+                entries_today = 0
+
+            pos = open_pos.get(sym)
+            if pos is not None and idx > pos["idx"]:
+                if bar["date"] != pos["date"]:
+                    reason, held = "DATE_ROLLOVER", 0.0
+                else:
+                    reason, held = _exit_reason(bar, pos["entry_dt"], pos["stop"])
+                if reason:
+                    gross = pos["qty"] * (bar["c"] - pos["entry"])
+                    net = gross - buy_fee - sell_fee
+                    realised += net
+                    taken.append({
+                        "symbol": sym, "entry_date": pos["date"],
+                        "entry_et": pos["entry_et"], "entry": pos["entry"],
+                        "qty": pos["qty"], "notional_usd": pos["notional"],
+                        "stop": pos["stop"], "exit_date": bar["date"],
+                        "exit_et": bar["hhmm"], "exit": bar["c"],
+                        "held_minutes": round(held, 1), "reason": reason,
+                        "gross_usd": gross, "fees_usd": buy_fee + sell_fee,
+                        "net_usd": net,
+                    })
+                    del open_pos[sym]
+                    pos = None
+
+            if (sym, tk) in signals:
+                if sym in open_pos:
+                    skip(sym, tk, "ALREADY_HOLDING")
+                elif len(open_pos) >= max_conc:
+                    skip(sym, tk, "POSITION_COUNT_LIMIT")
+                elif sym in cluster_members and any(
+                        s in cluster_members for s in open_pos):
+                    skip(sym, tk, "CORRELATION_CLUSTER_LIMIT")
+                elif entries_today >= max_entries:
+                    skip(sym, tk, "ENTRY_BUDGET_EXHAUSTED")
+                elif (last_entry_tk is not None
+                      and (tk - last_entry_tk) < min_gap_s * 1000):
+                    skip(sym, tk, "ENTRY_TOO_SOON")
+                else:
+                    try:
+                        size = size_position(rcfg, symbol=f"US.{sym}",
+                                             price=bar["c"], atr20=bar["atr20"],
+                                             equity=START_EQUITY)
+                    except RiskViolation as exc:
+                        skip(sym, tk, f"SIZING_{exc.args[0]}")
+                    else:
+                        cash = START_EQUITY + realised - sum(
+                            p["notional"] + buy_fee for p in open_pos.values())
+                        if size.notional_usd + buy_fee > cash:
+                            skip(sym, tk, "INSUFFICIENT_CASH")
+                        else:
+                            entry_dt = datetime.strptime(
+                                f"{bar['date']} {bar['hhmm']}", "%Y-%m-%d %H:%M")
+                            open_pos[sym] = {
+                                "date": bar["date"], "entry_et": bar["hhmm"],
+                                "idx": idx, "entry": bar["c"], "qty": size.qty,
+                                "notional": size.notional_usd,
+                                "stop": bar["c"] - stop_mult * bar["atr20"],
+                                "entry_dt": entry_dt,
+                                "binding": size.binding_constraint,
+                            }
+                            entries_today += 1
+                            last_entry_tk = tk
+
+        equity = START_EQUITY + realised
+        for s, p in open_pos.items():
+            equity += p["qty"] * (last_close[s] - p["entry"]) - buy_fee
+        curve.append(equity)
+        peak = max(peak, equity)
+        max_dd = max(max_dd, peak - equity)
+
+    still_open = [
+        {"symbol": s, "entry_date": p["date"], "entry_et": p["entry_et"],
+         "entry": p["entry"], "qty": p["qty"], "stop": p["stop"]}
+        for s, p in open_pos.items()
+    ]
+    n_closed = len(taken)
+    net = sum(t["net_usd"] for t in taken)
+    reasons: dict[str, int] = {}
+    for t in taken:
+        reasons[t["reason"]] = reasons.get(t["reason"], 0) + 1
+
+    print("\n\nPART F -- SEQUENTIAL SIMULATION WITH REAL PORTFOLIO LIMITS " + "-" * 29)
+    print("Signals: the 22 joint (ATR + regime) signals, processed in timestamp")
+    print("order. Within one timestamp, symbols are processed alphabetically; the")
+    print(f"{min_gap_s}s entry gap means only the first can enter. Sizing from")
+    print("engine.sizing.size_position with equity $100,000 (not reimplemented).")
+    print(f"Limits from config: max_concurrent {max_conc}, index-broad cluster "
+          f"max {cluster_cap},")
+    print(f"max_entries/session {max_entries}, min gap {min_gap_s}s. "
+          f"Fees ${buy_fee:.2f} buy + ${sell_fee:.2f} sell per ORDER.")
+    print("-" * 96 + "\n")
+    if taken:
+        print(f"{'symbol':8}{'entry':18}{'qty':>5}{'notional':>13}"
+              f"{'  exit':18}{'reason':>13}{'gross$':>9}{'fees$':>7}{'net$':>8}")
+        for t in taken:
+            print(f"{t['symbol']:8}{t['entry_date'] + ' ' + t['entry_et']:18}"
+                  f"{t['qty']:>5}{t['notional_usd']:>13,.2f}"
+                  f"{'  ' + t['exit_date'] + ' ' + t['exit_et']:18}"
+                  f"{t['reason']:>13}"
+                  f"{t['gross_usd']:>+9.2f}{t['fees_usd']:>7.2f}"
+                  f"{t['net_usd']:>+8.2f}")
+    for p in still_open:
+        print(f"{p['symbol']:8}{p['entry_date'] + ' ' + p['entry_et']:18}"
+              f"{p['qty']:>5}{'':>11}{'still open':18}{'OPEN':>13}")
+    print(f"\ntaken {n_closed} of {len(signals)} signals "
+          f"({len(still_open)} still open at the data edge)")
+    print("  exits: " + ", ".join(f"{k} {v}" for k, v in sorted(reasons.items())))
+    if skipped:
+        print("  not taken:")
+        for reason in sorted(k for k in skipped if k != "_signals"):
+            print(f"    {reason:32}{skipped[reason]:>3}")
+    print(f"\nrealised P&L  ${net:+,.2f}  = {100.0 * net / START_EQUITY:+.4f}% "
+          f"of ${START_EQUITY:,.0f} equity")
+    print(f"max drawdown  ${max_dd:,.2f}  = {100.0 * max_dd / START_EQUITY:.4f}% "
+          f"(mark-to-market at every 5-min close; includes open positions at")
+    print("              last close minus reserved buy commission)")
+    if taken:
+        w = sum(1 for t in taken if t["net_usd"] > 0)
+        print(f"win rate      {100.0 * w / n_closed:.1f}% ({w}/{n_closed})")
+        print(f"Part D's independent 1-share net for all 22 was "
+              f"${sum(t['net'] for t in d_trades):+,.2f}; the {n_closed} trades "
+              f"above are a subset at real position size, so compare selection")
+        print("and Win/Loss pattern, not the dollar totals, across the two.")
+        first = taken[0]
+        print(f"\nfirst taken trade arithmetic ({first['symbol']} "
+              f"{first['entry_date']} {first['entry_et']} ET):")
+        print(f"  price {first['entry']:.4f}, qty {first['qty']} = "
+              f"${first['notional_usd']:,.2f} notional "
+              f"(15% cap = ${START_EQUITY * 0.15:,.2f})")
+        print(f"  stop  = {first['entry']:.4f} - {stop_mult:.2f}*ATR = "
+              f"{first['stop']:.4f}")
+        print(f"  exit  {first['exit_date']} {first['exit_et']} ET at "
+              f"{first['exit']:.4f} ({first['reason']})")
+        print(f"  gross = {first['qty']} * ({first['exit']:.4f} - "
+              f"{first['entry']:.4f}) = ${first['gross_usd']:+,.2f}")
+        print(f"  net   = ${first['gross_usd']:+,.2f} - "
+              f"${first['fees_usd']:.2f} = ${first['net_usd']:+,.2f}")
+    return {
+        "note": "measurement, not parameter selection; no strategy change",
+        "equity": START_EQUITY,
+        "limits": {"max_concurrent": max_conc, "cluster_cap": cluster_cap,
+                   "max_entries_per_session": max_entries,
+                   "min_seconds_between_entries": min_gap_s,
+                   "buy_fee": buy_fee, "sell_fee": sell_fee},
+        "n_signals": len(signals), "n_taken": n_closed,
+        "n_open": len(still_open),
+        "exits": reasons, "not_taken": {k: v for k, v in skipped.items()
+                                        if k != "_signals"},
+        "not_taken_detail": skipped.get("_signals", []),
+        "realised_net_usd": net,
+        "realised_pct_of_equity": 100.0 * net / START_EQUITY,
+        "max_drawdown_usd": max_dd,
+        "max_drawdown_pct_of_equity": 100.0 * max_dd / START_EQUITY,
+        "trades": taken, "still_open": still_open,
+        "cross_check_independent_trades_net": sum(t["net"] for t in d_trades),
+    }
+
+
+def part_g(trades):
+    """Distribution of the stop breach at exit, in entry-ATR units."""
+    stops = [t for t in trades if t["reason"] == "STOP_HIT"]
+    rows = []
+    for t in stops:
+        breach = (t["stop"] - t["exit"]) / t["entry_atr"]
+        rows.append({
+            "symbol": t["symbol"], "date": t["entry_date"],
+            "time_et": t["entry_et"], "entry": t["entry"],
+            "stop": t["stop"], "exit": t["exit"], "entry_atr": t["entry_atr"],
+            "breach_atr": breach,
+        })
+    print("\n\nPART G -- STOP EXIT DEPTH " + "-" * 71)
+    print("For each STOP_HIT in Part D: how far below the stop level the exit")
+    print("close actually was, in units of that trade's entry ATR20.")
+    print("Close-based: the stop fires on a 5-min close at or below the level and")
+    print("the exit is that close, so this is a lower bound on intrabar depth.")
+    print("-" * 96 + "\n")
+    if not rows:
+        print("no STOP_HIT exits in the sample")
+        return {"note": "measurement, not parameter selection", "n": 0}
+    print(f"{'symbol':8}{'entry date/time':18}{'entry':>10}{'stop':>10}"
+          f"{'exit':>10}{'ATR20':>8}{'breach ATR':>12}")
+    for r in rows:
+        print(f"{r['symbol']:8}{r['date'] + ' ' + r['time_et']:18}"
+              f"{r['entry']:>10.4f}{r['stop']:>10.4f}{r['exit']:>10.4f}"
+              f"{r['entry_atr']:>8.4f}{r['breach_atr']:>12.3f}")
+    vals = sorted(r["breach_atr"] for r in rows)
+    print(f"\nn={len(vals)}   min {vals[0]:.3f}   p25 {statistics.quantiles(vals, n=4)[0]:.3f}"
+          f"   median {statistics.median(vals):.3f}"
+          f"   p75 {statistics.quantiles(vals, n=4)[2]:.3f}   max {vals[-1]:.3f}"
+          f"   mean {statistics.fmean(vals):.3f}")
+    buckets = [("0 <= x < 0.05", 0.0, 0.05), ("0.05 <= x < 0.15", 0.05, 0.15),
+               ("0.15 <= x < 0.30", 0.15, 0.30), ("0.30 <= x < 0.60", 0.30, 0.60),
+               ("x >= 0.60", 0.60, float("inf"))]
+    for label, lo, hi in buckets:
+        n = sum(1 for v in vals if lo <= v < hi)
+        print(f"  {label:20}{n:>3}  {'#' * n}")
+    return {
+        "note": "measurement, not parameter selection",
+        "n": len(vals), "min": vals[0], "median": statistics.median(vals),
+        "max": vals[-1], "mean": statistics.fmean(vals),
+        "buckets": {label: sum(1 for v in vals if lo <= v < hi)
+                    for label, lo, hi in buckets},
+        "trades": rows,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--extend", action="store_true",
+                    help="also run PARTS E-G (filter ablation, sequential sim, "
+                         "stop depth); Parts A-D output is unchanged either way")
+    args = ap.parse_args(argv)
     cfg = yaml.safe_load((ROOT / "config" / "risk_limits.yaml").read_text())
     min_atr = {k: float(v) for k, v in cfg["fees"]["min_atr20_usd"].items()}
 
@@ -462,7 +868,7 @@ def main() -> int:
     print("strategy makes money.")
     print("-" * 96)
 
-    OUT.write_text(json.dumps({
+    payload = {
         "generated_by": "analysis/measure_signal_rate.py",
         "sample": [WINDOW_FROM, WINDOW_TO],
         "part_a": a,
@@ -490,8 +896,38 @@ def main() -> int:
             "total_net": sum(t["net"] for t in trades),
             "trades": trades,
         },
-    }, indent=2) + "\n")
+    }
+    OUT.write_text(json.dumps(payload, indent=2) + "\n")
     print(f"\nWrote {OUT}")
+
+    if not args.extend:
+        return 0
+
+    e = part_e(b, series, idx_by_sym, spy_regime, min_atr, trades, open_trades)
+    f = part_f(b, series, ROOT / "config" / "risk_limits.yaml", trades)
+    g = part_g(trades)
+
+    print("\n" + "-" * 96)
+    print("PARTS E-G ARE MEASUREMENT, NOT PARAMETER SELECTION. Nothing here")
+    print("was used to pick a threshold, and no strategy change has been made:")
+    print("the regime rule, ATR floor, stops and limits in config/ are exactly")
+    print("what was pre-committed. These numbers describe this 9-session sample")
+    print("plus one partial session and do not establish that any variant would")
+    print("keep behaving the same way out of sample.")
+    print("-" * 96)
+
+    ext = {
+        "generated_by": "analysis/measure_signal_rate.py --extend",
+        "sample": [WINDOW_FROM, WINDOW_TO],
+        "disclaimer": "Parts E-G are measurement, not parameter selection. No "
+                      "strategy change has been made.",
+        "part_e": e,
+        "part_f": f,
+        "part_g": g,
+    }
+    ext_out = HERE / "signal_rate_extended.json"
+    ext_out.write_text(json.dumps(ext, indent=2) + "\n")
+    print(f"\nWrote {ext_out}")
     return 0
 
 

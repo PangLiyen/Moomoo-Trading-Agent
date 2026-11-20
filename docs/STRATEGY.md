@@ -168,3 +168,111 @@ inadequate sample is the failure mode we are explicitly guarding against.
 The deck's warning is adopted as a design rule: **several agents agreeing is not
 independent proof that a trade is good.** Agreement between agents is therefore never
 used as a reason to increase size or override a limit.
+
+---
+
+# ADDENDUM — Invalidation report, 2026-11-21
+
+Added after the measurement described in `analysis/measure_signal_rate.py`,
+**before any strategy trade was placed.** Everything above this line is the
+original pre-committed specification and has not been edited. This addendum is
+appended rather than merged so the order of events stays legible: the rule was
+specified, then measured, then reported on.
+
+## What was measured
+
+Nine sessions of 5-minute RTH bars, 11-09 to 11-20, 713 bars per symbol.
+170 bars satisfied the base entry conditions. Exits simulated per section 4 at
+bar closes, fees charged at the measured $1.99 round trip.
+
+## Conditions tripped
+
+| # | Condition | Result | Verdict |
+|---|---|---|---|
+| **I1** | Win rate < 40%, n ≥ 15 | 0.0% on 22 regime-OK trades; 9.6% on all 166 | **TRIPPED** |
+| **I2** | Mean realised R < 0, n ≥ 15 | mean net −2.32/trade; gross also negative | **TRIPPED** |
+| **I3** | Reversion to SMA20 fails in > 55% of setups | 90.9% failed (regime-OK); 65.1% (all) | **TRIPPED** |
+| I4 | Median slippage > 0.05% of notional | measured 0.0244% on the live probe | not tripped |
+| I5 | > 60% of losses while REGIME == OK | 14.7% — **but the condition is mis-specified** | see below |
+| I6 | Session loss > 1.5% of equity | max simulated session loss 0.21% | not tripped |
+| I7 | Simultaneous positions co-move > 0.9 | cluster rule blocked 7 of 22 entries; no overlap occurred | untestable |
+
+**The strategy is declared invalidated on I1, I2 and I3.** Sample size was
+adequate for all three (22 and 166 closed trades against a threshold of 15),
+so these are not "untestable" — they are failures.
+
+## I5 was a badly written test, and that is a finding too
+
+I5 asked whether more than 60% of *losing trades* happened while the regime
+filter was open. It counts losses. The regime-OK group is small by
+construction — 22 trades against 147 blocked — so even if every regime-OK
+trade lost, the count could never approach 60% of all losses. **The condition
+could not detect the thing it was written to detect.**
+
+Comparing rates rather than counts, which is what it should have done:
+
+| group | n | loss rate | gross P&L | reverted to SMA20 |
+|---|---|---|---|---|
+| REGIME == OK | 22 | **100.0%** | −7.36 | 9.1% |
+| REGIME == blocked | 144 | 88.9% | **+6.71** | ~35% |
+
+The filter did not merely fail to help. **Trades it permitted were worse than
+trades it blocked, on every measure.** Its stated premise in section 5 — that
+mean reversion is more reliable absent a directional regime — is falsified for
+these instruments at this horizon in this window. The plausible mechanism:
+requiring SPY above its own 5-hour average selects dips inside an already
+extended move, which continue; dips while SPY is below that average are
+closer to genuinely oversold, and bounce more often.
+
+I5 is restated for any future work as a rate comparison, not a count:
+
+> **I5′** — the loss rate of REGIME-permitted trades is not lower than the
+> loss rate of REGIME-blocked trades, measured over ≥ 20 trades in each group.
+
+Restating a test after it fails to fire is a change to our instrumentation,
+not to the strategy. No entry, exit, sizing or risk parameter has been altered
+as a result of this measurement, and `config/risk_limits.yaml` is unchanged
+except for recording measured facts.
+
+## What we are not doing
+
+We are not searching for a configuration that performs better on these nine
+sessions. Zero wins in 22 trades cannot indicate which parameter to change,
+and any improvement found by trying stop multiples or filter periods against
+this sample would be noise fitted to one window and then presented as a
+pre-committed rule. That is the specific dishonesty this entire entry is built
+to avoid, and it would be worth less than an honest negative result.
+
+Nor did inverting the regime filter produce an edge: gross P&L across all 170
+base signals is **−0.65 on 170 one-share trades**, which is indistinguishable
+from zero before costs. There is no profitable version of this rule in this
+sample. The strategy has no measured edge, and we say so.
+
+## What the measurement does establish
+
+The risk system contained an edgeless strategy to a small, bounded loss.
+Sequential simulation honouring every real limit — 3 concurrent positions, the
+SPY/QQQ/IWM cluster cap, 6 entries per session, the 300-second spacing, and
+`engine.sizing` for every quantity — took **9 of 22 signals** and produced:
+
+| | |
+|---|---|
+| Realised P&L | **−$187.57 (−0.188% of equity)** |
+| Max drawdown | **$210.23 (0.210%)** |
+| Entries refused by the cluster rule | 7 |
+| Entries refused as already holding | 5 |
+| Entries refused on spacing | 1 |
+
+A strategy with no edge, run for nine sessions, cost 0.19% and never drew down
+more than 0.21%. Stop-depth measurement supports this: the median breach past
+the stop level was 0.249 ATR and the mean 0.333, both inside the 0.5 ATR
+slippage buffer `sizing` already assumes, with two decisive exceptions at
+0.775 and 1.054 ATR. The buffer was conservative in the direction that
+matters, and the measurement vindicates it rather than prompting a change.
+
+That containment is what this entry actually demonstrates. It was always the
+claim — section 1 says the contribution is that every decision is bounded,
+recorded and attributable, and that "the strategy exists so that there is
+something real to govern." The strategy turned out to be a poor one. The
+governance held anyway, and now there are numbers for it rather than
+assertions.

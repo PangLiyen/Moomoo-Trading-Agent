@@ -24,9 +24,16 @@ DEFINITIONS -- fixed, do not tune to results.
      The first bar of each session compares against the previous session's 15:55
      close, so the overnight gap is inside TR. It is NOT reset at 09:35.
   4. ATR20   = Wilder RMA, NOT a simple 20-bar mean:
-                 seed  = arithmetic mean of the first 20 TRs
+                 seed  = arithmetic mean of TR[1..20]
                  ATR_t = (ATR_{t-1} * 19 + TR_t) / 20
-     ATR20 is first defined on the 20th TR and updated on every bar after it.
+     TR[0] has no prior close -- its fallback is H-L, not a true range -- so it
+     is excluded from the seed. The first ATR is emitted at input index 20 and
+     the recursion starts at index 21 with TR[21], matching engine/signal.py
+     atr_wilder() and analysis/canonical.mjs.
+     The original port seeded on TR[0..19], left index 20 undefined, and never
+     applied TR[20]; that behaviour is kept behind
+     COMPUTE_INDICATORS_ATR_SEED=legacy_tr0_19 so the committed
+     analysis/signal_rate_output.json stays reproducible.
   5. SMA20   = simple mean of the last 20 closes, current bar inclusive.
   6. Qualifier counts bars in the window where ALL of:
                  close < SMA20 - 1.5*ATR20
@@ -55,6 +62,7 @@ BAD-TICK EXCLUSION -- explicit rule, not ad hoc.
 """
 
 import json
+import os
 import statistics
 import sys
 from datetime import datetime
@@ -79,13 +87,19 @@ ATR_PERIOD = 20
 SMA_PERIOD = 20
 DISLOCATION_ATR_MULT = 1.5
 
+ATR_SEED_TR1_20 = "tr1_20"          # engine + canonical.mjs
+ATR_SEED_LEGACY = "legacy_tr0_19"   # original port, pre-fix
+ATR_SEED_MODE = os.environ.get("COMPUTE_INDICATORS_ATR_SEED", ATR_SEED_TR1_20)
+
 RANGE_BLOWUP_MULT = 10.0
 WICK_HIGH_MULT = 1.01
 WICK_LOW_MULT = 0.99
 
 
 def load_bars(symbol):
-    path = HERE / f"bars_US_{symbol}_full.json"
+    path = HERE / "archive" / f"bars_US_{symbol}_full.json"
+    if not path.exists():
+        path = HERE / f"bars_US_{symbol}_full.json"
     raw = json.loads(path.read_text())
     bars = []
     for b in raw:
@@ -115,8 +129,17 @@ def session_bars(bars):
     return [b for b in bars if SESSION_START_MIN <= b["mins"] <= SESSION_END_MIN]
 
 
-def compute_series(bars):
-    """Returns a new list of dicts with tr / atr20 / sma20 attached. Input untouched."""
+def compute_series(bars, *, atr_seed=None):
+    """Returns a new list of dicts with tr / atr20 / sma20 attached. Input untouched.
+
+    atr_seed: None uses the module default from COMPUTE_INDICATORS_ATR_SEED
+    ("tr1_20" unless overridden). Pass "legacy_tr0_19" to reproduce the
+    original port exactly.
+    """
+    mode = atr_seed or ATR_SEED_MODE
+    if mode not in (ATR_SEED_TR1_20, ATR_SEED_LEGACY):
+        raise ValueError(f"unknown ATR seed mode: {mode!r}")
+
     out = []
     prev_close = None
     atr = None
@@ -132,18 +155,34 @@ def compute_series(bars):
             b["tr"] = max(b["h"] - b["l"], abs(b["h"] - prev_close), abs(b["l"] - prev_close))
         b["prev_close"] = prev_close
 
-        # Wilder seeding: ATR20 exists only from the 20th TR onward.
-        if i <= ATR_PERIOD:
-            seed_sum += b["tr"]
-            seed_n += 1
-            if seed_n == ATR_PERIOD:
-                atr = seed_sum / ATR_PERIOD
-                b["atr20"] = atr
+        if mode == ATR_SEED_LEGACY:
+            # Original port: seed on TR[0..19], first ATR at index 21, TR[20] unused.
+            if i <= ATR_PERIOD:
+                seed_sum += b["tr"]
+                seed_n += 1
+                if seed_n == ATR_PERIOD:
+                    atr = seed_sum / ATR_PERIOD
+                    b["atr20"] = atr
+                else:
+                    b["atr20"] = None
             else:
-                b["atr20"] = None
+                atr = (atr * (ATR_PERIOD - 1) + b["tr"]) / ATR_PERIOD
+                b["atr20"] = atr
         else:
-            atr = (atr * (ATR_PERIOD - 1) + b["tr"]) / ATR_PERIOD
-            b["atr20"] = atr
+            # Engine/canonical: TR[0] has no prior close, so the seed is TR[1..20].
+            if i == 0:
+                b["atr20"] = None
+            elif i <= ATR_PERIOD:
+                seed_sum += b["tr"]
+                seed_n += 1
+                if seed_n == ATR_PERIOD:
+                    atr = seed_sum / ATR_PERIOD
+                    b["atr20"] = atr
+                else:
+                    b["atr20"] = None
+            else:
+                atr = (atr * (ATR_PERIOD - 1) + b["tr"]) / ATR_PERIOD
+                b["atr20"] = atr
 
         closes.append(b["c"])
         b["sma20"] = statistics.fmean(closes[-SMA_PERIOD:]) if len(closes) >= SMA_PERIOD else None
@@ -230,6 +269,8 @@ def main():
     print("=" * 78)
     print("5-minute RTH bars, session 09:35-15:55 ET, window "
           f"{WINDOW_FROM}..{WINDOW_TO} (warm-up from 2026-11-04)")
+    print(f"ATR seed mode: {ATR_SEED_MODE}  "
+          "(set COMPUTE_INDICATORS_ATR_SEED=legacy_tr0_19 for the pre-fix port)")
     print("=" * 78)
 
     for symbol in SYMBOLS:
@@ -321,7 +362,12 @@ def main():
         "generated_by": "analysis/compute_indicators.py",
         "window": [WINDOW_FROM, WINDOW_TO],
         "session_bars_et": "09:35-15:55 (16:00 closing print dropped)",
-        "atr": "Wilder RMA, 20-period, seed = mean of first 20 TRs",
+        "atr_seed_mode": ATR_SEED_MODE,
+        "atr": ("Wilder RMA, 20-period, seed = mean of TR[1..20], "
+                "first value at input index 20, recursion from 21 (engine semantics)"
+                if ATR_SEED_MODE == ATR_SEED_TR1_20 else
+                "Wilder RMA, 20-period, seed = mean of TR[0..19], first value at "
+                "input index 21, TR[20] unused (legacy port)"),
         "sma": "simple mean of last 20 closes, current inclusive",
         "qualifier": "close < SMA20 - 1.5*ATR20 and close > prev_close, 10:00 <= t < 15:00 ET",
         "bad_tick_rule": "H-L > 10*median(H-L), or H > max(O,C)*1.01, or L < min(O,C)*0.99",

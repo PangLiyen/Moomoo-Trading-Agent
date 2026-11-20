@@ -1,0 +1,287 @@
+{
+  "generated_by": "analysis/verify_implementations.py",
+  "tolerance": 1e-09,
+  "canonical": {
+    "ran": true,
+    "keys": [
+      "atr20_stats",
+      "atr_defined_bars",
+      "avg_move_intraday",
+      "avg_move_with_gap",
+      "bars_per_date",
+      "bars_total_kept",
+      "current",
+      "first_bar",
+      "last_bar",
+      "median_range",
+      "outlier_excluded",
+      "outliers",
+      "qual_bars",
+      "qual_count",
+      "qual_count_incl_1500",
+      "qual_per_date",
+      "symbol",
+      "window"
+    ],
+    "per_bar_keys": [],
+    "outliers": [
+      {
+        "d": "2026-11-19",
+        "t": "15:55",
+        "o": 717.14,
+        "h": 731.89,
+        "l": 716.84,
+        "c": 717.56,
+        "v": 2937560,
+        "range": 15.05,
+        "x_median": 16.01
+      }
+    ]
+  },
+  "symbols": {
+    "SPY": {
+      "symbol": "SPY",
+      "bars": 944,
+      "sma": {
+        "max": {
+          "abs_diff": 3.410605131648481e-13,
+          "index": 23,
+          "date": "2026-11-04",
+          "time_et": "11:30",
+          "time_key": 1793809800000,
+          "engine": 766.3311549999997,
+          "compute_indicators": 766.3311550000001
+        },
+        "n_over_tol": 0
+      },
+      "atr": {
+        "max": {
+          "abs_diff": 0.0,
+          "index": 20,
+          "date": "2026-11-04",
+          "time_et": "11:15",
+          "time_key": 1793808900000,
+          "engine": 1.8459250000000054,
+          "compute_indicators": 1.8459250000000054
+        },
+        "n_over_tol": 0,
+        "over_tol_range": null,
+        "compute_indicators_none_at": []
+      },
+      "prefix_exclusions": [],
+      "exclusion": {
+        "committed": [
+          "2026-11-19 15:55"
+        ],
+        "engine": [
+          "2026-11-19 15:55"
+        ],
+        "canonical": [
+          "2026-11-19 15:55"
+        ],
+        "agree_ab": true,
+        "agree_ac": true
+      },
+      "entry": {
+        "engine": 39,
+        "compute": 39,
+        "engine_only": [],
+        "compute_only": []
+      }
+    },
+    "QQQ": {
+      "symbol": "QQQ",
+      "bars": 944,
+      "sma": {
+        "max": {
+          "abs_diff": 1.5559999999999263,
+          "index": 89,
+          "date": "2026-11-05",
+          "time_et": "10:35",
+          "time_key": 1793892900000,
+          "engine": 676.852,
+          "compute_indicators": 675.296
+        },
+        "n_over_tol": 20
+      },
+      "atr": {
+        "max": {
+          "abs_diff": 0.3414787886155386,
+          "index": 85,
+          "date": "2026-11-05",
+          "time_et": "10:15",
+          "time_key": 1793891700000,
+          "engine": 2.270424227689248,
+          "compute_indicators": 2.6119030163047867
+        },
+        "n_over_tol": 384,
+        "over_tol_range": [
+          "2026-11-05",
+          "2026-11-12",
+          384
+        ],
+        "compute_indicators_none_at": []
+      },
+      "prefix_exclusions": [
+        "2026-11-05T10:15:00-05:00"
+      ],
+      "exclusion": {
+        "committed": [
+          "2026-11-19 11:55"
+        ],
+        "engine": [
+          "2026-11-05 10:15",
+          "2026-11-19 11:55"
+        ],
+        "canonical": [
+          "2026-11-19 11:55"
+        ],
+        "agree_ab": true,
+        "agree_ac": true
+      },
+      "entry": {
+        "engine": 34,
+        "compute": 34,
+        "engine_only": [],
+        "compute_only": []
+      }
+    },
+    "IWM": {
+      "symbol": "IWM",
+      "bars": 945,
+      "sma": {
+        "max": {
+          "abs_diff": 1.1368683772161603e-13,
+          "index": 35,
+          "date": "2026-11-04",
+          "time_et": "12:30",
+          "time_key": 1793813400000,
+          "engine": 283.0712450000001,
+          "compute_indicators": 283.071245
+        },
+        "n_over_tol": 0
+      },
+      "atr": {
+        "max": {
+          "abs_diff": 0.0,
+          "index": 20,
+          "date": "2026-11-04",
+          "time_et": "11:15",
+          "time_key": 1793808900000,
+          "engine": 0.7490049999999968,
+          "compute_indicators": 0.7490049999999968
+        },
+        "n_over_tol": 0,
+        "over_tol_range": null,
+        "compute_indicators_none_at": []
+      },
+      "prefix_exclusions": [],
+      "exclusion": {
+        "committed": [],
+        "engine": [],
+        "canonical": [],
+        "agree_ab": true,
+        "agree_ac": true
+      },
+      "entry": {
+        "engine": 44,
+        "compute": 44,
+        "engine_only": [],
+        "compute_only": []
+      }
+    },
+    "XLF": {
+      "symbol": "XLF",
+      "bars": 945,
+      "sma": {
+        "max": {
+          "abs_diff": 2.842170943040401e-14,
+          "index": 223,
+          "date": "2026-11-06",
+          "time_et": "15:20",
+          "time_key": 1793996400000,
+          "engine": 57.427259999999976,
+          "compute_indicators": 57.427260000000004
+        },
+        "n_over_tol": 0
+      },
+      "atr": {
+        "max": {
+          "abs_diff": 0.0,
+          "index": 20,
+          "date": "2026-11-04",
+          "time_et": "11:15",
+          "time_key": 1793808900000,
+          "engine": 0.15649000000000052,
+          "compute_indicators": 0.15649000000000052
+        },
+        "n_over_tol": 0,
+        "over_tol_range": null,
+        "compute_indicators_none_at": []
+      },
+      "prefix_exclusions": [],
+      "exclusion": {
+        "committed": [],
+        "engine": [],
+        "canonical": [],
+        "agree_ab": true,
+        "agree_ac": true
+      },
+      "entry": {
+        "engine": 32,
+        "compute": 32,
+        "engine_only": [],
+        "compute_only": []
+      }
+    },
+    "XLE": {
+      "symbol": "XLE",
+      "bars": 945,
+      "sma": {
+        "max": {
+          "abs_diff": 4.263256414560601e-14,
+          "index": 94,
+          "date": "2026-11-05",
+          "time_et": "11:00",
+          "time_key": 1793894400000,
+          "engine": 64.17149999999997,
+          "compute_indicators": 64.17150000000001
+        },
+        "n_over_tol": 0
+      },
+      "atr": {
+        "max": {
+          "abs_diff": 0.0,
+          "index": 20,
+          "date": "2026-11-04",
+          "time_et": "11:15",
+          "time_key": 1793808900000,
+          "engine": 0.31124000000000007,
+          "compute_indicators": 0.31124000000000007
+        },
+        "n_over_tol": 0,
+        "over_tol_range": null,
+        "compute_indicators_none_at": []
+      },
+      "prefix_exclusions": [],
+      "exclusion": {
+        "committed": [],
+        "engine": [],
+        "canonical": [],
+        "agree_ab": true,
+        "agree_ac": true
+      },
+      "entry": {
+        "engine": 21,
+        "compute": 21,
+        "engine_only": [],
+        "compute_only": []
+      }
+    }
+  },
+  "entry_totals": {
+    "engine": 170,
+    "compute": 170,
+    "json": 170
+  }
+}

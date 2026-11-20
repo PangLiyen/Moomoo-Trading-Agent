@@ -1,8 +1,15 @@
 # Trading Strategy — Pre-Committed Specification
 
 **Status:** v0.1 — committed BEFORE any strategy trade is placed
-**Committed at (UTC):** _fill in on first commit_
-**Rules hash:** _computed from config/risk_limits.yaml + this file_
+**Committed at (UTC):** 2026-11-20T15:33:59Z (local 23:33:59 +08:00)
+**Commit:** `5748462cbc285e9754daf59c977baf20b4aa3ceb`
+**Rules hash** — sha256 of the files as committed in `5748462`:
+- `docs/STRATEGY.md` `d2295d99f073af1e2810aa7a7433a282742d8b60288990ad7b31a75563c08ec0`
+- `config/risk_limits.yaml` `c0ca0cf8c090c633a4d667c302e4f0b88cc7747b75cfcd69b678d9e71dc44050`
+
+Both are verifiable with `git show 5748462:<path> | shasum -a 256`. The first
+strategy trade had not been placed at that commit, and no strategy trade has
+been placed as of the addenda below.
 
 > This document is written before trading begins and is **not** edited to match results.
 > If the rules change, a new version is committed with a reason and a timestamp, and the
@@ -276,3 +283,74 @@ recorded and attributable, and that "the strategy exists so that there is
 something real to govern." The strategy turned out to be a poor one. The
 governance held anyway, and now there are numbers for it rather than
 assertions.
+
+---
+
+# ADDENDUM 2 — Specification corrections, 2026-11-21
+
+Found by reading this document against the code rather than against the
+results. Both divergences below are cases where the **implementation is right
+and section 5 above is stale**. Section 5 is deliberately left as written: it
+is the pre-committed text, and editing it to match the code would destroy the
+only property that makes it evidence. The corrections live here instead.
+
+## C1 — Sizing distance is 1.5 × ATR20, not 1.0
+
+Section 5 documents:
+
+```
+stop_dist   = 1.0 × ATR20
+qty         = floor(risk_usd / stop_dist)
+```
+
+`engine/sizing.py` uses `sizing_risk_distance_atr_mult`, which is **1.5**.
+
+This changed as a direct consequence of the Session 00 capability probe, which
+established that the simulated API exposes no resting stop orders of any kind
+— `order_type` accepts only `{1: Limit, 3: Market}`. The stop therefore
+triggers at 1.0 × ATR20 but *fills* on the next agent cycle at whatever the
+market is then. Sizing against the trigger distance would assume the stop
+fills at its own trigger price, which understates realised risk by exactly the
+amount the slippage is.
+
+So sizing uses trigger (1.0) plus a slippage buffer (0.5). Section 7,
+limitation 4 anticipated this dependency before the probe ran: *"Stop
+enforcement depends on the outcome of the Session 00 probe."*
+
+Measurement since has vindicated the buffer rather than the documented value:
+across 15 simulated stop exits the median breach past the stop level was
+**0.249 ATR** and the mean **0.333**, both inside 0.5, with two decisive
+exceptions at 0.775 and 1.054.
+
+**Effect on realised sizes: none.** `max_position_notional_pct` (15%) binds
+before the risk budget on all five symbols at $100,000 equity, so quantity is
+set by the notional cap either way. The divergence is in the documented
+rationale, not in the numbers the engine produced.
+
+## C2 — Gross exposure shrinks a proposal; section 5 says it rejects one
+
+Section 5: *"reject if `notional` would push gross exposure past
+`max_gross_exposure_pct` (40%)"*.
+
+`engine/risk_gate.py` returns `SHRINK` with a reduced quantity when a smaller
+position fits inside the remaining headroom, and only `BLOCK`s when not even
+`min_qty` fits. Shrinking is the better behaviour — a valid smaller position
+is preferable to no position, and the invariant that the gate may only ever
+reduce a proposal is enforced by assertion and tested across 2,000 randomised
+states. But it is not what section 5 says.
+
+Recorded rather than reconciled. A reader comparing the specification to the
+code should find the difference documented here, not discover it unremarked.
+
+## Why these are in an addendum and not an edit
+
+Section 5 is dated, hashed and committed. Its value as evidence comes entirely
+from being the text that existed before the measurements, and a specification
+that quietly tracks its implementation is not a specification. The cost of
+keeping it honest is that it now contains two statements the code does not
+follow, and those are listed above.
+
+The general rule this project is applying: **the original document never
+changes; corrections are appended with dates and reasons.** The same rule
+produced Addendum 1, and the same rule is why `I5` was restated in a new
+condition `I5′` rather than rewritten in place.

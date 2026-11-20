@@ -78,20 +78,134 @@ class SignalVerdict:
 # Data quality
 # ---------------------------------------------------------------------------
 
-def flag_outlier_bars(bars: Sequence[Bar], *, multiple: float = 10.0) -> list[int]:
-    """Indices of bars whose range exceeds `multiple` x the median range.
+# Outlier detection. Two detectors, because there are two different faults.
+OUTLIER_REFERENCE_BARS = 100
+OUTLIER_MIN_WARMUP_BARS = 20
+OUTLIER_WICK_TOLERANCE = 0.01     # 1% beyond the bar's own open/close
+
+
+def _is_bad_print(bar: Bar, *, tolerance: float = OUTLIER_WICK_TOLERANCE) -> bool:
+    """True when a bar's high or low is implausibly far from its own body.
+
+    Scale-free and self-referential: it uses only this bar's open, high, low
+    and close. No window, no median, no dependence on the volatility around
+    it. That is what makes it the right detector for a bad print, which is a
+    data fault rather than a market event.
+
+    SPY 2026-11-19 15:55 printed a high of 731.89 against an open of 717.14
+    and a close of 717.56 -- 2.00% above both ends of its own body, on a bar
+    whose low was 716.84. Prices do not travel 15 points and return within
+    five minutes while the open and close sit four cents apart. The range
+    rule below happened to catch it while the median was computed globally,
+    and stopped catching it when the median went trailing, because the
+    trailing window was dominated by the volatile session the bad print was
+    in. This detector cannot be fooled that way.
+    """
+    body_hi, body_lo = max(bar.open, bar.close), min(bar.open, bar.close)
+    if body_hi <= 0 or body_lo <= 0:
+        return False
+    return bar.high > body_hi * (1.0 + tolerance) or bar.low < body_lo * (1.0 - tolerance)
+
+
+def _session_open_indices(bars: Sequence[Bar]) -> set[int]:
+    """Indices of each session's first bar.
+
+    A session-open bar's range contains the overnight gap, which is real price
+    information rather than an anomaly. Measuring it against intraday ranges
+    compares two different things: a quiet midday median makes a perfectly
+    ordinary open look like a 13x outlier. XLE 2026-11-16 09:35 was excluded
+    for exactly this reason before these bars were exempted.
+    """
+    seen: set = set()
+    opens: set[int] = set()
+    for i, b in enumerate(bars):
+        day = b.ts_et.date()
+        if day not in seen:
+            seen.add(day)
+            opens.add(i)
+    return opens
+
+
+def flag_outlier_bars(
+    bars: Sequence[Bar],
+    *,
+    multiple: float = 10.0,
+    reference_bars: int = OUTLIER_REFERENCE_BARS,
+    min_warmup: int = OUTLIER_MIN_WARMUP_BARS,
+    wick_tolerance: float = OUTLIER_WICK_TOLERANCE,
+) -> list[int]:
+    """Indices of bars that should not feed the indicators.
 
     Returns indices rather than a filtered list so the caller can record
     exactly which bars were dropped. A filter that silently removes data is
     indistinguishable, afterwards, from one that removed inconvenient data.
+
+    TWO DETECTORS, FOR TWO DIFFERENT FAULTS
+
+    1. Bad print -- `_is_bad_print`, scale-free, applies to every bar
+       including session opens and warm-up bars. A high 2% outside the body
+       is a data error whatever the volatility regime.
+
+    2. Anomalous range -- more than `multiple` x the median range of the
+       preceding `reference_bars`, with session-open bars exempt.
+
+    WHY THE RANGE MEDIAN IS TRAILING, AND FIXED-LENGTH
+
+    The first version took the median of the whole array it was handed. A
+    cross-implementation verification found what that costs: with a growing
+    prefix the median moves, so a FIXED historical bar changed exclusion
+    status as history accumulated. SPY 2026-11-04 10:05, range 8.686, sat on
+    the boundary:
+
+        first  63 bars   median 0.8700  ->  9.98x   kept
+        first 693 bars   median 0.8650  -> 10.04x   EXCLUDED
+        first 945 bars   median 1.0300  ->  8.43x   kept
+
+    It entered and left the exclusion set 58 times across prefixes 63..693,
+    and at the flip point SPY's ATR moved 4.2e-2 for no reason in the price
+    data. A past bar's treatment depended on future bars, and the ATR a live
+    cycle computed depended on how many bars it happened to be fed -- an
+    operational parameter, not market data.
+
+    Trailing and fixed-length fixes that, at a cost: the threshold now adapts
+    to recent volatility, so range alone misses a spike inside a volatile
+    stretch. Detector 1 is what covers that gap. Neither detector is
+    sufficient alone, which is why the first version of this fix -- trailing
+    median only -- stopped catching the one bar it was written for.
+
+    Bars inside the warm-up are exempt from the RANGE test only, because
+    there is nothing to measure them against. They are still checked for bad
+    prints. Keeping a suspect warm-up bar is the safer error anyway: it
+    inflates ATR, which widens stops and shrinks position size.
     """
+    if not bars:
+        return []
+
     ranges = [b.range for b in bars]
-    if len(ranges) < 5:
-        return []
-    med = median(r for r in ranges if r > 0) if any(r > 0 for r in ranges) else 0.0
-    if med <= 0:
-        return []
-    return [i for i, r in enumerate(ranges) if r > multiple * med]
+    session_opens = _session_open_indices(bars)
+    flagged: set[int] = set()
+
+    # Detector 1: bad prints. Every bar, no exemptions.
+    for i, bar in enumerate(bars):
+        if _is_bad_print(bar, tolerance=wick_tolerance):
+            flagged.add(i)
+
+    # Detector 2: anomalous range, trailing reference, opens exempt.
+    for i in range(min_warmup, len(ranges)):
+        if i in session_opens:
+            continue
+        window = [
+            r for j, r in enumerate(ranges[max(0, i - reference_bars):i],
+                                    start=max(0, i - reference_bars))
+            if r > 0 and j not in session_opens
+        ]
+        if len(window) < min_warmup:
+            continue
+        med = median(window)
+        if med > 0 and ranges[i] > multiple * med:
+            flagged.add(i)
+
+    return sorted(flagged)
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,373 @@
+# Risk limits — the single source of truth for every bound the agent operates under.
+#
+# RULES OF USE
+#   1. The model never reads this to "interpret" it. Code reads it and enforces it.
+#   2. Changing a value is a git commit with a reason. Never edited mid-session.
+#   3. The risk auditor may make any of these STRICTER at runtime. It may never loosen one.
+#   4. Anything not explicitly permitted here is forbidden.
+
+version: "0.1"
+committed_at_utc: null        # fill on first commit
+rules_hash: null              # sha256 of this file + docs/STRATEGY.md
+
+# ---------------------------------------------------------------------------
+# ACCOUNT GUARD — fail-closed. Empty competition_acc_id blocks every proposal.
+# ---------------------------------------------------------------------------
+account:
+  competition_acc_id: "5832647"                                     # MEASURED 20 Nov
+  expected_account_name: "Moomoo x Qoder AI Paper Trading Agent Challenge"
+  market_id: 100                                                    # must match acc_id
+  environment: paper          # hard requirement; "live" is rejected unconditionally
+  # Explicit deny. The agent picked 5852463 unprompted on first run and reported its
+  # $1,000,000 balance as if it were the competition balance. It was not.
+  blocklist_acc_ids: ["5852462", "5852463", "5852464"]
+  require_name_match: true    # verify name AND id on every cycle, not just at startup
+  # MEASURED 20 Nov: the competition account is the ONLY one with account_type 2;
+  # the three generic paper accounts are all account_type 1. Second, independent
+  # discriminator — check it as well as the name, since a name can be edited in the UI.
+  expected_account_type: 2
+  # FIELD-NAME ASYMMETRY (measured): sim_trade_account_list RETURNS the field as
+  # `account_id`, but sim_trade_cash_info / sim_trade_input_order TAKE it as `acc_id`.
+  # Same value, two names. Code must map, not assume one spelling throughout.
+  id_field_in_list_response: account_id
+  id_field_in_request_params: acc_id
+  starting_equity_usd: 100000   # MEASURED 20 Nov 09:52 ET on 5832647. NOT 1,000,000.
+
+  # EQUITY BASIS — which field the sizing percentages are computed against.
+  # MEASURED: sim_trade_cash_info returns max_power_long = 200000 = 2x balance, i.e. the
+  # account has 2:1 margin available. allow_margin is false, so that headroom must be
+  # treated as if it does not exist. Every pct in `sizing` is a pct of total_asset.
+  equity_basis_field: total_asset       # NOT max_power_long
+  forbid_sizing_off_buying_power: true  # reading max_power_long for sizing is a BLOCK
+  max_gross_exposure_pct_of_cash: 40.0  # same number as sizing.max_gross_exposure_pct,
+                                        # restated here against the correct denominator
+  # MEASURED: realized_profit and unrealized_profit came back as JSON null, not 0, on a
+  # fresh account. Code must not coerce null to 0 — a null is "API gave no value" and a
+  # 0 is "the API says zero". Our own equity curve is computed from total_asset deltas
+  # and from the ledger, never from these two fields.
+  pnl_fields_may_be_null: true
+  equity_curve_source: total_asset
+
+# ---------------------------------------------------------------------------
+# ACCOUNT INTEGRITY — MEASURED HAZARD, 20 Nov.
+#
+# A second, unidentified actor placed two orders in 5832647 during the probe
+# session (3128921 ANT buy 09:55:36 ET, 3128965 ANT sell 10:04:55 ET). The
+# second arrived 2.5 minutes after our last API write, so it was concurrent,
+# not an artefact of our calls.
+#
+# This matters more than the trades themselves. The ledger's hash chain proves
+# our own records were not edited after the fact. It says nothing about orders
+# we never placed. If a second writer is active, account P&L cannot be
+# attributed to our decisions and the evidence claim collapses. So the agent
+# must detect foreign writes itself and halt, rather than silently averaging
+# someone else's trades into its own performance.
+# ---------------------------------------------------------------------------
+account_integrity:
+  # Every order we place carries an S00-/S01- style tag in `text`. Both foreign
+  # orders had text:"". The tag is therefore the discriminator.
+  require_text_tag_on_own_orders: true
+  own_order_text_prefix: "S"
+  # Reconcile on EVERY cycle: pull the account's full order list and compare it
+  # against our ledger. Any order we cannot account for is a foreign write.
+  reconcile_order_list_every_cycle: true
+  on_untagged_order_detected: halt        # not "warn", not "ignore"
+  # Second fingerprint, independent of the tag: both foreign orders used
+  # order_trade_time_type 2 (extended hours). We set 1 unconditionally, so a
+  # type-2 order in this account is foreign by construction.
+  foreign_if_order_trade_time_type_not: 1
+  # Positions we did not open are equally disqualifying.
+  reconcile_positions_every_cycle: true
+  on_unexplained_position: flatten_and_halt
+  # Baseline. Anything outside this set at session start is foreign.
+  known_foreign_order_ids: ["3128921", "3128965"]
+  expected_flat_at_session_start: true
+
+# ---------------------------------------------------------------------------
+# UNIVERSE
+# ---------------------------------------------------------------------------
+universe:
+  symbols: [US.SPY, US.QQQ, US.IWM, US.XLF, US.XLE]
+  allow_symbols_outside_list: false
+  clusters:
+    index_broad:
+      members: [US.SPY, US.QQQ, US.IWM]
+      max_concurrent_positions: 1     # correlation guard
+  instrument_rules:
+    allow_options: false
+    allow_shorting: false
+    allow_margin: false
+    allow_leveraged_or_inverse_etfs: false
+    min_price_usd: 20.0
+
+# ---------------------------------------------------------------------------
+# POSITION SIZING
+# ---------------------------------------------------------------------------
+sizing:
+  risk_per_trade_pct: 0.35          # % of equity risked entry -> stop
+  stop_distance_atr_mult: 1.0       # where the stop TRIGGERS
+  # MEASURED: the sim API has no resting stop orders, so the stop fills on the next
+  # agent cycle, not at the trigger. Size as if it fills 0.5 ATR worse, keeping
+  # realised risk inside risk_per_trade_pct even when the software stop is late.
+  stop_slippage_buffer_atr_mult: 0.5
+  sizing_risk_distance_atr_mult: 1.5   # = trigger + buffer; used for qty only
+  use_displayed_depth: false        # book feed is NASDAQ+ARCA only, not consolidated
+  target: sma20                     # exit at the mean
+  max_position_notional_pct: 15.0
+  # MEASURED CONSEQUENCE, 20 Nov. The notional cap binds before the risk budget on
+  # EVERY symbol, because 5-minute ATR is small relative to price. At $100k equity:
+  #   SPY  risk budget allows 138 sh, cap allows  20 -> actual risk/trade $50.52 (0.05%)
+  #   QQQ  allows 108,  cap  23 -> $73.89 (0.07%)
+  #   IWM  allows 411,  cap  56 -> $47.59 (0.05%)
+  #   XLF  allows 2422, cap 269 -> $38.86 (0.04%)
+  #   XLE  allows 2136, cap 245 -> $40.13 (0.04%)
+  # So risk_per_trade_pct 0.35 is a CEILING THAT IS NEVER APPROACHED — realised risk
+  # is 0.04-0.07%, roughly 5-9x more conservative than the stated limit. This is
+  # structural, not a misconfiguration: making 0.35% binding on SPY would need a
+  # position of ~99% of equity. Stated plainly in the submission rather than leaving
+  # a limit in the config that implies more risk is being taken than actually is.
+  realised_risk_per_trade_pct_measured: 0.05
+  risk_budget_is_binding: false
+  max_gross_exposure_pct: 40.0
+  max_concurrent_positions: 3
+  min_qty: 1
+  model_may_choose_quantity: false  # non-negotiable
+
+# ---------------------------------------------------------------------------
+# FEES — MEASURED 20 Nov, confirmed three independent ways. See
+# docs/API_CAPABILITIES.md s3. account_order_fees is dead (-32603); this is
+# derived from observed behaviour instead.
+# ---------------------------------------------------------------------------
+fees:
+  commission_per_filled_order_usd: 0.99
+  charged_on: fill_only            # the resting unfilled order was NOT charged
+  # The API reserves limit_price + commission in `hold` at submission, so the fee is
+  # knowable BEFORE the fill, not only after. Pre-trade cost checks are therefore exact.
+  reserved_in_hold_at_submission: true
+  # Round-trip cost floor. Any setup whose expected move does not clear this by the
+  # multiple below is not worth taking.
+  round_trip_cost_usd: 1.98
+  min_expected_edge_to_cost_ratio: 5.0
+  # Consequence: small positions are fee-dominated. MEASURED round-trip cost on SPY,
+  # commission + execution, against a 0.5*ATR20 reversion target (ATR20 assumed ~$7 —
+  # NOT yet measured, revisit):
+  #     3 shares  ($2.1k)  cost/edge 23.9%   FAILS the 5.0 ratio
+  #    10 shares  ($7.2k)  cost/edge 10.7%   passes
+  #    20 shares  ($14.3k) cost/edge  7.8%   passes
+  # The binding gate is the RATIO, checked per trade with that trade's own ATR. The
+  # notional floor below is only a crude backstop for when ATR is unavailable.
+  min_position_notional_usd: 3000
+
+  # ---- OPEN / BLOCKING: the cost gate cannot be set until ATR20 is measured ----
+  # Earlier working assumed ATR20 ~ $7. That is a DAILY-scale ATR and this strategy
+  # runs on 5-MINUTE bars, where SPY's 20-period ATR is roughly $0.40-$1.50. The
+  # correction matters because the target move is 1.5*ATR20, so a 7x ATR error is a
+  # 7x edge error. Recomputed, with max_position_notional_pct 15.0 capping SPY at 20
+  # shares regardless of ATR:
+  #     ATR20 0.40 -> cost/edge 45.7%  FAIL
+  #     ATR20 0.60 -> cost/edge 30.4%  FAIL
+  #     ATR20 0.80 -> cost/edge 22.8%  FAIL
+  #     ATR20 1.00 -> cost/edge 18.3%  pass
+  #     ATR20 1.50 -> cost/edge 12.2%  pass
+  # So on a quiet tape this strategy does not clear its own transaction costs. The
+  # notional cap binds in every scenario, meaning risk_per_trade_pct is never the
+  # binding constraint — the cap is.
+  #
+  # Fix is a per-trade cost gate, not a looser cap: refuse any setup whose expected
+  # move does not clear round-trip cost by the ratio. Threshold is derived, not chosen.
+  require_cost_gate_per_trade: true
+  on_cost_gate_fail: no_trade  # a skipped trade is a correct decision, and is logged
+
+  # RESOLVED 20 Nov from 9 sessions of 5-minute bars (11-09 -> 11-19, 693 RTH bars
+  # per symbol). Derived, not chosen: the value of ATR20 at which the capped position
+  # size stops clearing round-trip cost by the 5.0 ratio. Below it, do not trade.
+  min_atr20_usd:
+    US.SPY: 0.4633
+    US.QQQ: 0.4870
+    US.IWM: 0.1512
+    US.XLF: 0.0579
+    US.XLE: 0.0603
+  # These gates are LIVE, not decorative. Against the quietest ATR20 observed in the
+  # sample: XLF reached 0.0352 (below its 0.0579 gate) and XLE 0.0586 (below 0.0603).
+  # Both would have been correctly refused. SPY's quietest, 0.4651, barely cleared.
+
+  # Cost model correction. The $0.175/share measured on the SPY probe was a 27-second
+  # round trip: roughly $0.04 of spread plus ~$0.135 of adverse drift. Drift is what
+  # the strategy is trying to capture, not a transaction cost, so counting it as cost
+  # double-charges it. Cost modelling uses the quoted spread instead.
+  exec_cost_basis: quoted_spread
+  spread_round_trip_usd:
+    US.SPY: 0.04
+    US.QQQ: 0.06
+    US.IWM: 0.01
+    US.XLF: 0.01
+    US.XLE: 0.01
+  # Execution cost separate from commission. MEASURED: SPY 1-share round trip cost
+  # $0.175/share = 0.0244% of notional, on a quoted spread of ~0.0056%.
+  exec_cost_per_share_usd_spy: 0.175
+
+# ---------------------------------------------------------------------------
+# FREQUENCY BUDGETS
+# ---------------------------------------------------------------------------
+frequency:
+  max_entries_per_session: 6
+  max_orders_per_session: 20        # includes entries, exits, cancels, replaces
+  min_seconds_between_entries: 300
+  no_new_entries_after_et: "15:00"
+
+# ---------------------------------------------------------------------------
+# LOSS LIMITS AND KILL SWITCH
+# ---------------------------------------------------------------------------
+kill_switch:
+  daily_loss_halt_pct: 1.5          # stop opening new positions for the session
+  peak_drawdown_flatten_pct: 3.5    # flatten everything and disable the executor
+  consecutive_losses_halve_size: 3
+  consecutive_losses_stop_session: 5
+  manual_halt_env_var: AGENT_MODE   # set to "halt" to stop everything immediately
+  # Once tripped, re-arming is a MANUAL human action recorded in the ledger.
+  auto_rearm: false
+
+  # MEASURED HAZARD: Forward Mode schedules default to max_concurrent_runs 1. An
+  # overrunning run causes the NEXT trigger to be skipped (concurrency_limit_reached).
+  # With software-only stops, a skipped cycle is an unmonitored position. If the gap
+  # since the last completed cycle exceeds this, treat it as a risk event.
+  max_cycle_gap_seconds: 180
+  on_cycle_gap_exceeded: flatten    # do not resume as if nothing happened
+  log_skipped_schedule_runs: true
+
+# ---------------------------------------------------------------------------
+# SESSION AND CALENDAR CONTROL  (times in US Eastern)
+# ---------------------------------------------------------------------------
+session:
+  trade_regular_hours_only: true
+  use_extended_hours_bars_in_indicators: false
+  earliest_entry_et: "10:00"        # skip the first 30 min of open noise
+  flatten_all_by_et: "15:50"
+  hold_overnight: false
+
+calendar_overrides:
+  - date: "2026-11-26"
+    status: closed
+    note: "Thanksgiving — US equities closed. Audit logs and tune, do not trade."
+  - date: "2026-11-27"
+    status: half_day
+    market_close_et: "13:00"
+    flatten_all_by_et: "12:45"
+    note: "Black Friday early close. Flatten early; no positions into the weekend."
+  - date: "2026-11-28"
+    status: closed
+    note: "Competition trading window closes."
+
+# ---------------------------------------------------------------------------
+# DATA QUALITY GATES — a bad input must produce no trade, not a guessed trade
+# ---------------------------------------------------------------------------
+data_quality:
+  max_quote_age_seconds: 120
+  # MEASURED: quote_stock_quote `data_time` is the LAST TRADE time (~9s at probe);
+  # the order book carries its own, fresher timestamp (~4s). Executability must be
+  # judged on the book timestamp. Reading data_time for this measures the wrong thing.
+  staleness_source: order_book_timestamp
+  record_both_timestamps: true
+  max_spread_pct_of_mid: 0.05       # measured spreads 0.004-0.018% — live gate, not dead
+  min_bars_for_indicators: 20
+  on_missing_data: hold             # never extrapolate, never substitute
+  on_stale_quote: hold
+  on_conflicting_sources: hold
+
+# ---------------------------------------------------------------------------
+# EXECUTION
+# ---------------------------------------------------------------------------
+execution:
+  order_type: 1                     # 1=Limit. MEASURED: enum is only {1 Limit, 3 Market}
+  # MEASURED: sim_trade_input_order exposes NO time_in_force parameter at all.
+  # Unfilled-order lifetime is therefore unknown until measured — we cancel our own.
+  time_in_force: null
+  order_trade_time_type: 1          # 1 = intraday only. Makes an accidental
+                                    # extended-hours fill impossible by construction.
+  limit_offset_pct: 0.0             # at last close; do not chase
+
+  # MEASURED 20 Nov — AGGRESSIVE LIMITS FILL AT PREVAILING MARKET, NOT AT THE LIMIT.
+  # Four fills, all improved on their limit price:
+  #     SPY buy  limit 716.750 -> fill 715.830   (+0.920)
+  #     SPY sell limit 715.300 -> fill 715.655   (+0.355)
+  #     ANT buy  limit  91.761 -> fill  91.640   (+0.121)
+  #     ANT sell limit  91.620 -> fill  91.625   (+0.005)
+  # The limit acts as a cap/floor only. CONSEQUENCE: "fill vs limit" is price
+  # improvement, NOT slippage, and must never be logged as slippage. Real slippage is
+  # measured against the decision-time quote. The ledger records both, separately.
+  fills_at_prevailing_market: true
+  slippage_benchmark: decision_time_quote   # NOT the limit price
+  log_price_improvement_separately: true
+  broker_rested_stops: false        # MEASURED: no STOP / STOP_LIMIT / TRAILING_STOP
+
+  # CANCEL PATH — MEASURED 20 Nov 10:14 ET on order 3129023.
+  cancel_tool: sim_trade_cancel_order
+  cancel_params: [acc_id, market, order_id]   # nothing else is required
+  # The cancel response carries ONLY an order_id echo — no status field. A cancel is
+  # therefore NOT confirmed by a successful response. The executor must poll the order
+  # record until status == 5. Treating ret_code 0 as "cancelled" is a fail-open bug.
+  cancel_response_includes_status: false
+  cancel_requires_status_poll: true
+  cancel_confirmed_status: 5
+  cancel_server_latency_seconds: 2.0      # request -> server update_time
+  cancel_ack_latency_seconds: 3.9         # request -> response returned
+  cancel_confirm_latency_seconds: 6.0     # request -> confirmed in order list
+  cancel_poll_timeout_seconds: 30         # 5x measured; escalate past this
+  # A cancel costs nothing: the 0.99 commission reserve in `hold` is an estimate that
+  # never posts. hold released exactly 630.94 + 0.99 = 631.93, total_asset unchanged.
+  cancel_is_free: true
+
+  # MEASURED ORDER LATENCIES (20 Nov). These set the stop-latency budget.
+  submit_to_ack_seconds: 4.0
+  submit_to_fill_seconds: 7.0             # SPY buy 10:02:08 -> 10:02:15
+  # `balance` and `hold` are two buckets of the same money. On submission the reserve
+  # moves balance -> hold and total_asset does not change. Never read `balance` alone
+  # as available capital.
+  reserve_moves_balance_to_hold: true
+  available_capital_field: balance        # AFTER confirming hold is accounted for
+
+  # STATUS ENUM — behavioural, undocumented. Treat anything unlisted as unknown and halt.
+  status_filled: 4
+  status_resting: 2
+  status_cancelled: 5
+  status_enum_is_documented: false
+
+  software_stop_check_interval_seconds: 60
+  # `text` accepts 100 bytes stored on the order. Stamp the decision's ledger hash so
+  # moomoo's own order record is externally verifiable against our hash chain.
+  stamp_ledger_hash_in_text: true
+  # If broker_rested_stops resolves to false, max_holding_minutes becomes a HARD
+  # risk control, because an unmonitored position has no floor.
+  max_holding_minutes: 60
+  require_order_confirm_handling: true   # handle need_order_confirm two-step
+  cancel_unfilled_after_seconds: 300
+
+# ---------------------------------------------------------------------------
+# AGENT GOVERNANCE
+# ---------------------------------------------------------------------------
+governance:
+  pin_skill_versions: true          # never bind "latest" on the trading agent
+  pin_child_agent_versions: true
+  auditor_runs_in_separate_session: true
+  auditor_may_loosen_limits: false
+  executor_may_originate_trades: false
+  agreement_between_agents_may_increase_size: false
+  credentials_scoped_to: [executor] # coordinator and researcher hold none
+
+# ---------------------------------------------------------------------------
+# UNTRUSTED INPUT HANDLING
+# Text from news_search and quote_community_search is attacker-controllable.
+# It is DATA, never instruction.
+# ---------------------------------------------------------------------------
+untrusted_input:
+  treat_as_data_sources: [news_search, quote_community_search]
+  may_influence: [regime_context, human_readable_commentary]
+  may_never_influence:
+    - order_submission
+    - position_sizing
+    - stop_or_target_levels
+    - risk_limit_values
+    - account_selection
+    - universe_membership
+  on_instruction_detected: reject_and_log   # reason_code: INJECTION_SUSPECTED
+  quarantine_and_record_verbatim: true      # keep the payload as evidence

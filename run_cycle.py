@@ -30,6 +30,7 @@ from engine import (  # noqa: E402
     AccountGuardError, Ledger, RiskConfig, RiskGate, RiskViolation,
     SessionState, file_sha256, size_position, write_genesis,
 )
+from engine.provenance import describe_code  # noqa: E402
 from engine.account import (  # noqa: E402
     account_state_from_api, describe_guard_inputs, ledger_order_ids,
 )
@@ -136,7 +137,13 @@ def main() -> int:
                          "second writer")
     ap.add_argument("--entries-taken", type=int, default=0)
     ap.add_argument("--orders-placed", type=int, default=0)
-    ap.add_argument("--code-commit", default="unknown")
+    # Not operator-supplied. The first ledger's genesis pinned a commit that
+    # contained no engine, because this was a free-text argument defaulting to
+    # a string nobody checked. It is now derived and verified.
+    ap.add_argument("--require-clean-tree", action="store_true",
+                    help="refuse to run when engine files are modified but "
+                         "uncommitted. Set this for a live run: the commit "
+                         "hash verifies while describing different code")
     args = ap.parse_args()
 
     cfg = RiskConfig.load(ROOT / args.config)
@@ -153,16 +160,32 @@ def main() -> int:
     positions = _load_json(args.positions_json)
     account_order_ids = _load_json(args.order_ids_json)
 
+    # Establish provenance BEFORE anything else writes a record. A cycle whose
+    # code cannot be identified should not produce evidence at all.
+    code = describe_code(ROOT, require_clean=args.require_clean_tree)
+
     led = Ledger(ROOT / args.ledger)
     if led.seq == 0:
-        write_genesis(
+        genesis = write_genesis(
             led,
             config_hash=cfg.sha256,
             strategy_hash=file_sha256(ROOT / args.strategy),
-            code_commit=args.code_commit,
+            code_commit=code["code_commit"],
             account={"acc_id": cfg.acc_id, "starting_equity_usd": cfg.starting_equity},
         )
+        led.append({"stage": "genesis_provenance", "verdict": "INIT",
+                    "reason_code": "CODE_VERIFIED",
+                    "reason_text": "commit derived from git and verified to "
+                                   "contain every engine file",
+                    "provenance": code})
         print(f"ledger initialised at {args.ledger}")
+        print(f"  code  {code['code_commit_short']}  "
+              f"({code['commit_subject']})")
+        print(f"  rules {cfg.sha256[:12]}")
+        if code["engine_files_dirty"]:
+            print(f"  WARNING engine files modified on disk: "
+                  f"{code['engine_files_dirty']} -- the commit hash does not "
+                  f"describe the running code")
 
     cycle_id = f"C{now_et:%Y%m%dT%H%M}"
 

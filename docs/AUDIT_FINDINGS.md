@@ -163,3 +163,57 @@ every engine file, and `git show --stat 2153c64` contains none.
 
 Corrected here by appending, the same rule that governs the register above: a
 document that quietly repairs itself is evidence of nothing.
+
+---
+
+## Additions — 2026-11-24
+
+Four findings from the 2026-11-23 live session. Appended rather than merged
+into the tables above so the register's own history stays visible. With these
+the register stands at **33** numbered findings; the Count section above says
+29 and is left as written for that reason.
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| N28 | **High** | `analysis/measure_signal_rate.py:171` builds the signal set with the very condition it is later used to evaluate: `if not (dislocated and b["c"] > b["prev_close"]): continue`. Every signal in `base`, and therefore in `joint`, ticked up by construction, so "how many of the 22 would the tick-up filter block" must return 0 of 22 and can return nothing else. Measured correctly — on bars that pass regime and the ATR floor *before* the tick-up test — 57 dislocated bars survive the gates and tick-up removes **35 (61.4%)**, passing 22. Of all 614 dislocated bars in the window, 182 (29.6%) ticked up | **Open, documentation only.** The analysis code is not changed; the counts it produces are still correct as counts of *this strategy's* signals. What it cannot support is any inference about the tick-up condition itself. See "Which reports were affected" below |
+| N29 | Med | The entry gate never re-checks the live price. `evaluate_entry` scores the last **closed bar** close against the threshold; `quotes.json`'s bid/ask feed the spread check only. Cycle C20261123T1052 evaluated XLE at 60.35 against a 60.3688 threshold while the captured book was 60.41 / 60.42 — the market was above the trigger and the rule still read "dislocated". Between the qualifying bar and any order lies up to five minutes of price action | **Open.** The pre-committed rule is defined on bar closes, so this is a fidelity gap between the rule and the order that follows it, not a bug in the rule. Closing it means an explicit live-price re-check before submission, which is a strategy change and not taken (see N5, the same operator-supplied-numbers family) |
+| N30 | Low | `inputs/quotes.json` stores `bid`, `ask` and a precomputed `book_age_seconds` — no absolute book timestamp. The freshness the engine enforces at run_cycle.py:387 is a number the operator calculated at capture time; nothing in the file or the ledger can be re-derived afterwards, and nothing can check it against the book | **Open.** Unlike N5 this survives the executor: reading the book directly does not help unless the book's own timestamp is recorded. `quote_age_seconds` in the ledger is currently an assertion, not evidence |
+| N31 | **High** | The foreign-order guard has no freshness bound on its input. Cycle C20261123T1052 decided on a broker snapshot captured at 10:47:56 ET; order 3131737 was created at 10:52:29 — five minutes after the capture, 15.6 s before the run — so the order list the guard checked could not contain it. `gate.assert_no_foreign_activity` (run_cycle.py:306) correctly rejects any id it is shown; it is shown whatever the operator captured. Same class as FIX 1 (commit 3e4ce37: a negative quote age now halts instead of passing) and as the bar-lookahead defect fixed in 689e5c5 (bars that had not closed were used, producing negative staleness and lookahead): a safety decision taken on an input of unbounded age | **Open.** The detection on 2026-11-23 at 10:56:58 was **operator-initiated** — a fresh snapshot read by hand for the next cycle — and not engine-detected; no cycle ran against the post-order state. The fix is for the decision path to read the order list and account state itself and record the capture time, refusing to proceed past a configured age, as it already does for quotes. No line in this register or in `docs/INCIDENT_2026-11-23_FOREIGN_WRITER.md` claimed engine detection — the incident doc's section "What the engine detected, and when" opens "Nothing, until asked." and names the operator and the 10:56:58 snapshot; the run_cycle.py:306 halt it describes is explicitly labelled as read, not executed |
+
+### N28 — which reports were affected
+
+The circular count reached print. Every one of these is qualified or
+withdrawn to the extent it bears on tick-up:
+
+- **This session's answer of 2026-11-23, "0 of 22 (0.0%)".** Forced by the
+  sample definition. The counterfactual numbers produced alongside it
+  (57 pre-tick-up bars, 35 removed, 614 dislocated, 182 ticked) are not
+  affected and are the usable ones.
+- **Cycle reports for C20261123T1045 and C20261123T1052**, and the summary
+  phrasing "22 post-gate signals". Imprecise in a way that matters: the
+  pipeline applies tick-up **before** the regime and ATR gates
+  (measure_signal_rate.py:171 precedes :173-181), so the largest single
+  removal at the gated stage — 35 of 57 — belongs to tick-up and had been
+  attributed to nothing. Read "post-gate" in those reports as "post-everything".
+- **`docs/PRE_REGISTRATION.md` P3** ("simulation took 9 of 22 signals") and
+  **`docs/STRATEGY.md`** §"sequential simulation" and I7 ("cluster rule
+  blocked 7 of 22"). These are correct as counts of the pre-committed
+  strategy's own signal set, which legitimately includes the tick-up
+  condition. They cannot be cited as evidence about the tick-up filter.
+- **`docs/DDQ.md`** ("170 base signals … gross −0.65") and
+  **`docs/SCORING_PLAN.md:110`**, same category. 170 is *ticked* dislocations
+  in the baseline window, not all dislocations there.
+- **`analysis/measure_signal_rate.py` Part E** frames its blocked group as
+  "the counterfactual for the regime filter". The comparison is valid for the
+  regime filter, but both arms are tick-up-selected: 432 of 614 dislocated
+  bars never enter either arm.
+- **The stored project note** "170 base / 22 joint signals" inherits the same
+  qualification.
+
+This is the account-guard tautology again (`docs/AUDIT_2026-11-21.md` §5,
+`docs/DDQ.md` B4): there, the guard was handed config and asked to check it
+against config, so it could only fail if the YAML contradicted itself; here,
+the signal set is handed the tick-up condition and asked how it performs with
+and without it. Both are logic that is correct in isolation and unfalsifiable
+where it is wired. The earlier instance was found by an outside reader, and
+so was this one.

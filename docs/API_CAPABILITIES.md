@@ -52,6 +52,28 @@ direction. Code must map between them explicitly rather than assume one name hol
 throughout — a silent `KeyError` here fails open if the surrounding call is written
 defensively, which is exactly the wrong direction for an account guard.
 
+### Finding: `max_power_long` is 2 × (balance + mv/2), not 2 × balance (added 2026-11-23)
+
+Measured flat on 20 Nov: `max_power_long` = 200,000 against a 100,000 balance, which
+reads as exactly 2:1 margin. Measured again on 2026-11-23 with a 1-share MU position
+open: balance 99,285.72, `mv` 704.125, `max_power_long` **199,275.565**.
+
+```
+2 x balance                   = 198,571.44   (does not match)
+2 x (balance + mv/2)          = 199,275.565  (matches exactly)
+```
+
+So the 20 Nov figure was the flat-account special case. While a position is open, half
+its market value is added to the base before doubling, and the field moves with the
+mark. It is not a stable multiple of cash.
+
+`allow_margin` is false, so none of that headroom is usable — which is the first reason
+not to size off it. The second is the formula itself: any quantity computed from
+`max_power_long` would silently grow with an open position, including, as on 2026-11-23,
+a position this project did not open. That is why `account.forbid_sizing_off_buying_power`
+is `true`: reading `max_power_long` for sizing is a BLOCK, and `equity_basis_field` is
+`total_asset`. See `docs/INCIDENT_2026-11-23_FOREIGN_WRITER.md` for the measurement.
+
 ### Not measured
 
 - `sim_trade_account_list` returns **no currency field**. Currency is inferred from

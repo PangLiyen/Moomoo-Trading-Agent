@@ -114,3 +114,52 @@ we say only that.
 
 Nothing was promoted. No value in `config/` or `engine/` changed as a result
 of this run.
+
+---
+
+## Addendum 2026-11-24 — the tick-up condition, measured on TRAIN only
+
+Entry condition 2 (`close > previous_bar_close`) had never been measured
+separately; it arrived inside every H0 signal because the analysis defines the
+signal set with it (`analysis/measure_signal_rate.py:171` — see
+`docs/AUDIT_FINDINGS.md` N28). To measure it, the tick-up test has to be moved
+*after* the regime and ATR gates, so that both arms exist:
+
+- bars that are dislocated, in the entry window, regime-OK and above the ATR
+  floor — 57 across the window, of which 35 fail tick-up and 22 pass;
+- the 22 that pass are H0's signal set; the 35 that fail were, until now,
+  never counted as anything.
+
+**TRAIN only (11-09 … 11-13). TEST was not run.** Same exits as H0, 1 share,
+$1.99 round trip, entry at the qualifying bar's close.
+
+| group | n | closed | net > 0 | gross > 0 | stop/tgt/time | mean gross | median gross | mean net | total gross | total net |
+|---|---|---|---|---|---|---|---|---|---|---|
+| ticked up (H0) | 14 | 14 | **0** | 3 | 9/2/3 | **−0.395** | −0.188 | −2.385 | −5.52 | −33.38 |
+| did not tick | 23 | 23 | **0** | 4 | 16/1/6 | **−0.215** | −0.165 | −2.205 | −4.93 | −50.70 |
+
+The ticked row reproduces H0's TRAIN line in the table above exactly
+(14, 9/2/3, gross −5.52, net −33.38), which is the expected check: H0 *is*
+the ticked group.
+
+**Result.** Zero net-positive signals in either group. Gross is negative in
+both groups, and the group that passes the condition has the worse mean
+(−0.395 vs −0.215) and median (−0.188 vs −0.165). At 1 share with a $1.99
+round trip, no trade can clear its costs, so net is a fee count here; gross
+is the statistic that describes the entries, and on this sample the tick-up
+condition did not separate good entries from bad ones. The gross-positive
+rate (3 of 14 vs 4 of 23) is not distinguishable from noise at this size.
+
+**Independence caveat, stated in full.** These are not 37 independent
+observations. They are 37 bar-level flags over 2.5 sessions of one tape, and
+they cluster hard: 9 of the 14 ticked signals are consecutive bars between
+14:10 and 14:50 on 11-11, inside one SPY/QQQ move, and the not-ticked group
+has the same shape on 11-09 (11 of 23, XLE, 13:20–14:45). Counting them
+separately overstates the evidence by a large factor. They are also
+signal-set totals, not portfolio results: no concurrency limit, cluster rule
+or entry spacing is applied, which is the same error the H1 section above
+names as the subtler of its two. The honest sample size here is closer to a
+handful of price moves than to 37.
+
+Nothing was promoted, and nothing in `config/` or `engine/` changed. TEST
+remains untouched by this addendum.

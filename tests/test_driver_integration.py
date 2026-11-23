@@ -193,8 +193,13 @@ def _run(repo: Path, *, now="2026-11-23 10:35", ledger="d.jsonl",
         bars = _bars(repo, spy_above_sma60=spy_above, last_day=last_day)
     if quotes is None:
         quotes = _quotes(repo, age=age)
+    # The driver now requires seconds (N32). Call sites keep the readable
+    # minute form; a caller that can only express 10:35 is exactly the
+    # pre-fix clock, which the stale-order-list test pins.
+    if len(now) == 16:
+        now = now + ":00"
     if order_capture is None:
-        order_capture = (datetime.strptime(now, "%Y-%m-%d %H:%M")
+        order_capture = (datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
                          - timedelta(seconds=5)).strftime("%Y-%m-%d %H:%M:%S")
     # sys.executable, not a literal "python3". The harness previously shelled
     # out to whatever `python3` resolved to on PATH, which on a machine with
@@ -420,14 +425,12 @@ def test_a_foreign_order_halts_and_still_closes_the_cycle(repo):
 # --------------------------------------------------------------------------
 
 def test_a_stale_order_list_halts_the_guard(repo):
-    """Cycle 5's exact shape: a snapshot captured at 10:47:56 used for a
-    decision minutes later. The guard could not have seen the foreign order
-    created at 10:52:29, so it must refuse to attest at all rather than pass
-    on a state it cannot see.
+    """REGRESSION PIN for the pre-fix clock (N32), not the live path.
 
-    The driver's clock is minute-resolution, so the decision reads 10:52:00
-    and the age is 244s; the exact 10:52:44 figure (288s) is pinned in
-    tests/test_order_list_freshness.py.
+    The driver used to accept only 'YYYY-MM-DD HH:MM', so this run's decision
+    clock is 10:52:00 and the age it computes is 244s. The true cycle-5 age is
+    288s; that case is the next test. This one is kept because it is the
+    shape the suite could already express, and it must keep halting.
     """
     proc, recs = _run(repo, now="2026-11-23 10:52", ledger="staleorders.jsonl",
                       positions="{}", order_ids=PROBE_ORDERS,
@@ -442,6 +445,48 @@ def test_a_stale_order_list_halts_the_guard(repo):
     closing = [r for r in _stages(recs, "cycle") if r.get("verdict") == "HALT"]
     assert closing and closing[0]["reason_code"] == "STALE_ORDER_LIST"
     assert not _stages(recs, "signal"), "a stale order list still reached signals"
+
+
+def test_the_true_cycle_five_age_halts(repo):
+    """The live-path expectation: the decision actually happened at 10:52:44,
+    so the snapshot was 288s old. With seconds in the clock the guard records
+    the real age rather than a rounded-down one."""
+    proc, recs = _run(repo, now="2026-11-23 10:52:44", ledger="stale288.jsonl",
+                      positions="{}", order_ids=PROBE_ORDERS,
+                      order_capture="2026-11-23 10:47:56")
+    assert proc.returncode == 2
+    guard = [r for r in _stages(recs, "account_guard")
+             if r.get("verdict") == "HALT"]
+    assert guard and guard[0]["reason_code"] == "STALE_ORDER_LIST"
+    assert guard[0]["inputs"]["order_list"]["age_seconds"] == 288.0
+    assert guard[0]["inputs"]["order_list"]["captured_at_et"] == (
+        "2026-11-23 10:47:56")
+    assert not _stages(recs, "signal")
+
+
+def test_a_secondless_now_is_rejected_before_any_record(repo):
+    """N32. The old interface admitted only minutes, which understated ages by
+    up to 59s. A secondless value is now refused at the parse, before the
+    ledger exists for that run."""
+    ledger = repo / "noseconds.jsonl"
+    if ledger.exists():
+        ledger.unlink()
+    cmd = [
+        sys.executable, "run_cycle.py", "--now-et", "2026-11-23 10:35",
+        "--bars-dir", str(repo / "bars"),
+        "--account-json", str(_account(repo)),
+        "--positions-json", "{}",
+        "--order-ids-json", json.dumps(
+            {"captured_at_et": "2026-11-23 10:34:55",
+             "order_ids": PROBE_ORDERS}),
+        "--quotes-json", str(_quotes(repo)),
+        "--ledger", str(ledger), "--intents-out", str(repo / "outbox"),
+    ]
+    proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True,
+                          timeout=120)
+    assert proc.returncode == 2
+    assert "seconds" in proc.stderr
+    assert not ledger.exists(), "a rejected clock still started a cycle"
 
 
 def test_a_fresh_order_list_passes_and_the_age_is_recorded(repo):

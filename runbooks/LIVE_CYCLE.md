@@ -107,7 +107,7 @@ immediately before running, not at the start of the session.
 
 ```
 /tmp/mta-venv/bin/python run_cycle.py \
-  --now-et "<actual ET now, YYYY-MM-DD HH:MM>" \
+  --now-et "<actual ET now, YYYY-MM-DD HH:MM:SS>" \
   --bars-dir inputs \
   --account-json inputs/acct.json \
   --positions-json inputs/positions.json \
@@ -118,6 +118,10 @@ immediately before running, not at the start of the session.
 ```
 
 Add `--fills-json inputs/fills.json` when there are fills to report (§4).
+
+`--now-et` **must include seconds**; a minute-only value is rejected before
+the cycle starts (N32). Read it from a clock, not from memory: it is the
+reference every age in the cycle is measured against.
 
 **Observe-only is on in the shipped config** while the unattributed writer is
 unresolved. Every entry is refused with `OBSERVE_ONLY` and the stated reason,

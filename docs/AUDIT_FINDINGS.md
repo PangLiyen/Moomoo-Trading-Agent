@@ -233,3 +233,14 @@ rule this document follows.
 
 N28 and N30 remain open, unchanged.
 
+---
+
+## N32 — the decision clock had minute resolution, 2026-11-24
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| N32 | **High** | `--now-et` admitted only `"YYYY-MM-DD HH:MM"`. The truncating component is the **driver's CLI parse** — `datetime.strptime(args.now_et, "%Y-%m-%d %H:%M")` in `run_cycle.py` — not the harness and not the engine. The harness wrote minute strings because that was the only format the interface accepted; the engine takes a `datetime` and cannot tell how it was parsed. Every age the driver derives from `now_et` — bar staleness and the order-list age added by FIX A — was therefore quantised to the minute and understated by up to 59.999s against its bound. A snapshot 125s old read as 115s and passed the 120s bound; the same understatement applies to any quote age the operator computed from the same clock, since `book_age_seconds` is derived from `now − book_ts` (N30). The 2026-11-23 cycle-5 age was measured as 244s because the clock could say 10:52:00; the true age to the decision was 288s | **Open at recording; closed the same day.** `--now-et` now requires seconds (`_et_now_arg`); a secondless value is refused by argparse before the ledger is touched. The 244s test is kept and relabelled as the regression pin for the pre-fix behaviour; a 288s run is the live-path expectation. Same class as the three ET/timezone defects collected in `engine/timeutil.py`, the bar-lookahead defect fixed in `689e5c5` (a bar that had not closed used as if it had), and N31 / FIX A (a guard attesting to a snapshot of unbounded age): **in every case a safety decision was taken on an input whose precision or age was not what the decision assumed.** N31 bounded the age; N32 makes sure the clock measuring it can express the bound |
+
+With N32 the register stands at **34** numbered findings.
+
+

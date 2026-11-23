@@ -136,6 +136,25 @@ def _newest_bar_file(bars_dir: Path, short: str) -> Path | None:
     return hits[0] if hits else None
 
 
+def _et_now_arg(value: str) -> datetime:
+    """--now-et must carry seconds (N32).
+
+    A minute-resolution clock quantises every age the driver derives from it
+    -- bar staleness, the order-list age -- and can understate one by up to
+    59s against a 120s bound. That is exactly enough for a stale snapshot or
+    an old bar to pass. The value is rejected at the parse, before the ledger
+    is touched, rather than rounded.
+    """
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--now-et must be 'YYYY-MM-DD HH:MM:SS' in ET, with seconds; got "
+            f"{value!r}. A minute-resolution value understates every age the "
+            f"cycle measures by up to 59s against its bound (N32)."
+        )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/risk_limits.yaml")
@@ -143,7 +162,8 @@ def main() -> int:
     ap.add_argument("--bars-dir", default="analysis")
     ap.add_argument("--ledger", default="logs/decisions.jsonl")
     ap.add_argument("--intents-out", default="outbox")
-    ap.add_argument("--now-et", required=True, help='"YYYY-MM-DD HH:MM" ET')
+    ap.add_argument("--now-et", required=True, type=_et_now_arg,
+                    help='"YYYY-MM-DD HH:MM:SS" ET -- seconds are required')
     ap.add_argument("--account-json", required=True)
     ap.add_argument("--positions-json", required=True)
     ap.add_argument("--order-ids-json", required=True)
@@ -157,7 +177,7 @@ def main() -> int:
 
     cfg = RiskConfig.load(ROOT / args.config)
     gate = RiskGate(cfg)
-    now_et = datetime.strptime(args.now_et, "%Y-%m-%d %H:%M")
+    now_et = args.now_et
     code = describe_code(ROOT, require_clean=args.require_clean_tree)
 
     led = Ledger(ROOT / args.ledger)

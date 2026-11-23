@@ -49,13 +49,14 @@ sys.path.insert(0, str(ROOT))
 
 from engine import (  # noqa: E402
     AccountGuardError, Ledger, RiskConfig, RiskGate, RiskViolation,
-    StaleDataError, account_state_from_api, assert_quote_fresh, build_order,
-    crossing_limit, describe_code, describe_guard_inputs,
-    distance_to_trigger_atr, engine_file_set_hash, epoch_ms_to_et,
-    file_sha256, last_pinned_commit, ledger_order_ids, plan_code_change,
-    plan_exits, plan_session, record_account_snapshot, record_exit,
-    record_fill, record_submission, reconstruct, size_position,
-    sort_by_distance, validate_bars, write_intents, write_genesis,
+    StaleDataError, account_state_from_api, assert_order_list_fresh,
+    assert_quote_fresh, build_order, crossing_limit, describe_code,
+    describe_guard_inputs, distance_to_trigger_atr, engine_file_set_hash,
+    epoch_ms_to_et, file_sha256, last_pinned_commit, ledger_order_ids,
+    plan_code_change, plan_exits, plan_session, record_account_snapshot,
+    record_exit, record_fill, record_submission, reconstruct, size_position,
+    sort_by_distance, split_positions, validate_bars, write_intents,
+    write_genesis,
 )
 from engine.signal import (  # noqa: E402
     Bar, compute_indicators, evaluate_entry, regime_ok_from_spy,
@@ -270,8 +271,37 @@ def main() -> int:
 
     # ---- 5. state, cross-checked ----
     api_account = _load_json(args.account_json)
-    broker_positions = _load_json(args.positions_json)
-    account_order_ids = _load_json(args.order_ids_json)
+    position_rows = _load_json(args.positions_json)
+    orders_input = _load_json(args.order_ids_json)
+
+    # The order list's capture time travels with the orders, rather than being
+    # retyped on the command line. The guard's answer is only as current as
+    # the snapshot it reads (N31), so an untimed list is unusable input.
+    try:
+        if not (isinstance(orders_input, dict)
+                and "captured_at_et" in orders_input
+                and "order_ids" in orders_input):
+            raise ValueError(
+                'order list input must be {"captured_at_et": '
+                '"YYYY-MM-DD HH:MM:SS", "order_ids": [...]}. A bare list '
+                'carries no capture time, so the foreign-order guard cannot '
+                'bound the age of the state it attests to (N31).'
+            )
+        order_list_captured_at = _parse_ts(orders_input["captured_at_et"])
+        account_order_ids = [str(o) for o in orders_input["order_ids"]]
+        broker_positions, foreign_market_values = split_positions(
+            position_rows, cfg.symbols)
+    except (AccountGuardError, ValueError, KeyError, TypeError) as exc:
+        led.append({"cycle_id": cycle_id, "stage": "account_guard",
+                    "verdict": "HALT", "reason_code": "GUARD_INPUT_INVALID",
+                    "reason_text": str(exc)})
+        led.append({"cycle_id": cycle_id, "stage": "cycle", "verdict": "HALT",
+                    "reason_code": "GUARD_INPUT_INVALID",
+                    "reason_text": "cycle halted before the account guard: an "
+                                   "input it attests to is unusable",
+                    "code_commit": code["code_commit"]})
+        print(f"\nHALT -- guard input invalid: {exc}")
+        return 2
 
     known_own = set(ledger_order_ids(led.records()))
     known_own |= {str(o) for o in
@@ -285,13 +315,18 @@ def main() -> int:
     live = reconstruct(led.records(), cfg, now_et=now_et,
                        broker_equity=acct.total_asset,
                        broker_positions=broker_positions,
+                       foreign_market_values=foreign_market_values,
                        halted=halted,
                        halt_reason="AGENT_MODE=halt" if halted else "")
 
     record_account_snapshot(led, cycle_id=cycle_id, live_state=live)
     sess = live.session_state
-    print(f"EQUITY ${live.equity:,.2f}  peak ${live.peak_equity:,.2f}  "
+    print(f"EQUITY ${live.equity:,.2f}  sizing basis ${live.sizing_equity:,.2f}  "
+          f"peak ${live.peak_equity:,.2f}  "
           f"dd {sess.peak_drawdown_pct:.3f}%  session {sess.session_pnl_pct:+.3f}%")
+    if live.foreign_positions:
+        print(f"FOREIGN {live.foreign_positions}  "
+              f"mv ${live.foreign_market_value:,.2f} excluded from the sizing basis")
     print(f"STATE  positions {live.open_quantities() or 'flat'}  "
           f"entries today {sess.entries_this_session}  "
           f"losses in a row {sess.consecutive_losses}  "
@@ -301,9 +336,32 @@ def main() -> int:
 
     # ---- 7. guards ----
     guard_inputs = describe_guard_inputs(acct, cfg)
+    max_order_age = float(
+        cfg.section("account_integrity")["max_order_list_age_seconds"])
+    order_age = (now_et - order_list_captured_at).total_seconds()
+    guard_inputs["order_list"] = {
+        "captured_at_et": order_list_captured_at.isoformat(sep=" "),
+        "age_seconds": round(order_age, 3),
+        "max_age_seconds": max_order_age,
+    }
     try:
+        # Freshness first: a guard cannot honestly attest to a state older
+        # than its bound, so the stale snapshot is refused before the
+        # comparison rather than after it.
+        assert_order_list_fresh(order_age, max_order_age)
         gate.assert_account(acct)
         gate.assert_no_foreign_activity(acct)
+    except StaleDataError as exc:
+        led.append({"cycle_id": cycle_id, "stage": "account_guard",
+                    "verdict": "HALT", "reason_code": "STALE_ORDER_LIST",
+                    "reason_text": str(exc), "inputs": guard_inputs})
+        led.append({"cycle_id": cycle_id, "stage": "cycle", "verdict": "HALT",
+                    "reason_code": "STALE_ORDER_LIST",
+                    "reason_text": "cycle halted at the account guard: the "
+                                   "order list is too old to attest to",
+                    "code_commit": code["code_commit"]})
+        print(f"\nHALT -- stale order list: {exc}")
+        return 2
     except (AccountGuardError, RiskViolation) as exc:
         led.append({"cycle_id": cycle_id, "stage": "account_guard",
                     "verdict": "HALT",
@@ -381,6 +439,8 @@ def main() -> int:
     acct_for_entries = _replace(acct, open_positions=held_after_exits)
 
     max_age = float(cfg.section("data_quality")["max_quote_age_seconds"])
+    if cfg.observe_only:
+        print(f"\nOBSERVE-ONLY  entries disabled: {cfg.observe_only_reason}")
     display: list[dict[str, Any]] = []
     for sym, ind in indicators.items():
         q = quotes.get(sym, {})
@@ -411,9 +471,11 @@ def main() -> int:
             (float(q["ask"]) - float(q["bid"])) / mid * 100.0
             if mid > 0 and q.get("ask") and q.get("bid") else 1e9
         )
+        ask = float(q.get("ask") or 0)
 
         sig = evaluate_entry(
-            ind, regime_ok=regime_ok, quote_age_seconds=age,
+            ind, regime_ok=regime_ok, live_ask=ask,
+            quote_age_seconds=age,
             spread_pct_of_mid=spread_pct, now_et=now_et,
             max_quote_age_seconds=max_age,
             max_spread_pct_of_mid=float(cfg.section("data_quality")["max_spread_pct_of_mid"]),
@@ -437,9 +499,23 @@ def main() -> int:
             display.append(row)
             continue
 
+        if cfg.observe_only:
+            # Refuse after indicators are computed, so the record still shows
+            # what the signal was that would have been taken. This blocks
+            # entering only; exits above were already planned and submitted.
+            led.append({"cycle_id": cycle_id, "stage": "risk", "symbol": sym,
+                        "verdict": "BLOCK", "reason_code": "OBSERVE_ONLY",
+                        "reason_text": f"entry refused: {cfg.observe_only_reason}",
+                        "observed_signal": {"conditions": sig.conditions,
+                                            "detail": sig.detail},
+                        "inputs": ind.to_ledger()})
+            row["action"] = "BLOCK OBSERVE_ONLY"
+            display.append(row)
+            continue
+
         try:
             proposal = size_position(cfg, symbol=sym, price=ind.close,
-                                     atr20=ind.atr20, equity=live.equity)
+                                     atr20=ind.atr20, equity=live.sizing_equity)
         except RiskViolation as exc:
             led.append({"cycle_id": cycle_id, "stage": "sizing", "symbol": sym,
                         "verdict": "BLOCK", "reason_code": exc.reason_code,
@@ -489,6 +565,8 @@ def main() -> int:
                 "reason_code": "CYCLE_COMPLETE",
                 "reason_text": f"{len(orders)} order(s) awaiting submission"
                                if orders else "cycle complete; no action",
+                "execution_mode": ("observe_only" if cfg.observe_only
+                                   else "normal"),
                 "code_commit": code["code_commit"]})
 
     if orders:

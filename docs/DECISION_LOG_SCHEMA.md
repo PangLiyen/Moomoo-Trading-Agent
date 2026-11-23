@@ -155,6 +155,9 @@ across the week is a chart on the dashboard and a slide in the deck.
 | `AUDITOR_VETO` | Auditor's judgement, reason written out |
 | `INJECTION_SUSPECTED` | Untrusted text attempted to influence a protected field |
 | `MANUAL_HALT` | Operator set `AGENT_MODE=halt` |
+| `OBSERVE_ONLY` | Entry refused by `execution.observe_only`; the record carries the reason string and the signal that was refused |
+| `STALE_ORDER_LIST` | Order-list snapshot older than `max_order_list_age_seconds` at decision time; the foreign-order guard refuses to attest |
+| `GUARD_INPUT_INVALID` | The order list carries no capture time, or a foreign position carries no market value; the guard's inputs are unusable |
 
 ---
 

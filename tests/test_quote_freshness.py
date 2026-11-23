@@ -64,14 +64,16 @@ def test_driver_bar_parsing_uses_the_single_helper():
 
 def test_entry_rule_refuses_a_negative_age():
     with pytest.raises(StaleDataError):
-        evaluate_entry(_ind(), regime_ok=True, quote_age_seconds=-1.0,
+        evaluate_entry(_ind(), regime_ok=True, live_ask=699.9,
+                       quote_age_seconds=-1.0,
                        spread_pct_of_mid=0.005,
                        now_et=datetime(2026, 11, 23, 10, 25))
 
 
 def test_entry_rule_refuses_an_age_past_the_limit():
     with pytest.raises(StaleDataError):
-        evaluate_entry(_ind(), regime_ok=True, quote_age_seconds=121.0,
+        evaluate_entry(_ind(), regime_ok=True, live_ask=699.9,
+                       quote_age_seconds=121.0,
                        spread_pct_of_mid=0.005,
                        now_et=datetime(2026, 11, 23, 10, 25))
 

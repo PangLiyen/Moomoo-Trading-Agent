@@ -53,6 +53,7 @@ _REQUIRED_NUMERIC = (
     ("kill_switch", "peak_drawdown_flatten_pct"),
     ("data_quality", "max_quote_age_seconds"),
     ("data_quality", "max_spread_pct_of_mid"),
+    ("account_integrity", "max_order_list_age_seconds"),
 )
 
 
@@ -103,6 +104,7 @@ class RiskConfig:
         self._validate_prohibitions()
         self._validate_numerics()
         self._validate_universe_gates()
+        self._validate_observe_only()
         self._validate_coherence()
 
     def _validate_account(self) -> None:
@@ -190,6 +192,34 @@ class RiskConfig:
         if missing:
             raise ConfigError(f"fees.spread_round_trip_usd has no entry for {missing}")
 
+    def _validate_observe_only(self) -> None:
+        """A refusal must say why, and the reason has to be in the file.
+
+        `observe_only` stops every entry. If it is on and the reason is empty,
+        the ledger would record entries refused for no stated cause, which is
+        the same defect as a BLOCK record without a reason code. Absence is
+        not permission: both keys must be present even when the flag is off,
+        so flipping the flag on is never a one-word edit.
+        """
+        exe = _dig(self.raw, ("execution",))
+        flag = exe.get("observe_only")
+        if not isinstance(flag, bool):
+            raise ConfigError(
+                f"execution.observe_only must be exactly true or false, got "
+                f"{flag!r} — a missing flag is not permission to trade"
+            )
+        reason = exe.get("observe_only_reason")
+        if not isinstance(reason, str):
+            raise ConfigError(
+                "execution.observe_only_reason must be present as a string "
+                "(empty is allowed only while observe_only is false)"
+            )
+        if flag and not reason.strip():
+            raise ConfigError(
+                "execution.observe_only is true but observe_only_reason is "
+                "empty — every refused entry must carry its stated reason"
+            )
+
     def _validate_coherence(self) -> None:
         """Catch limits that contradict each other.
 
@@ -254,6 +284,14 @@ class RiskConfig:
     @property
     def symbols(self) -> tuple[str, ...]:
         return tuple(self.raw["universe"]["symbols"])
+
+    @property
+    def observe_only(self) -> bool:
+        return bool(self.raw["execution"]["observe_only"])
+
+    @property
+    def observe_only_reason(self) -> str:
+        return str(self.raw["execution"]["observe_only_reason"])
 
     @property
     def starting_equity(self) -> float:

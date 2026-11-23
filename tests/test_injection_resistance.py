@@ -137,11 +137,13 @@ def test_no_payload_can_reach_the_entry_rule(cfg, payload):
                      close=712.0, prev_close=711.8, sma20=716.0, atr20=2.1,
                      bars_used=250)
     with pytest.raises((TypeError, ValueError)):
-        evaluate_entry(ind, regime_ok=True, quote_age_seconds=payload,
+        evaluate_entry(ind, regime_ok=True, live_ask=711.0,
+                       quote_age_seconds=payload,
                        spread_pct_of_mid=0.005,
                        now_et=datetime(2026, 11, 23, 11, 0))
     with pytest.raises((TypeError, ValueError)):
-        evaluate_entry(ind, regime_ok=True, quote_age_seconds=4.0,
+        evaluate_entry(ind, regime_ok=True, live_ask=711.0,
+                       quote_age_seconds=4.0,
                        spread_pct_of_mid=payload,
                        now_et=datetime(2026, 11, 23, 11, 0))
 

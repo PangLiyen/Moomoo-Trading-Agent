@@ -283,6 +283,7 @@ def evaluate_entry(
     ind: Indicators,
     *,
     regime_ok: bool,
+    live_ask: float,
     quote_age_seconds: float,
     spread_pct_of_mid: float,
     now_et: datetime,
@@ -298,12 +299,20 @@ def evaluate_entry(
     StaleDataError rather than returning NO_SETUP, because a book whose age
     cannot be placed (negative) or that is too old is a data fault the cycle
     must surface, not a market reading it may silently decline.
+
+    `live_ask` is required, not optional. Section 4's rule is "price dislocated
+    below SMA20 by 1.5 ATR", and a limit that crosses the book fills near the
+    ask, so a bar-close test alone could permit a fill above the threshold and
+    outside the rule. The ask must be positive and strictly below the same
+    threshold; a missing or zero ask fails the condition rather than passing
+    it. This can only refuse entries, never create one.
     """
     threshold = ind.sma20 - dislocation_atr_mult * ind.atr20
     assert_quote_fresh(quote_age_seconds, max_quote_age_seconds)
 
     cond = {
         "dislocated_below_sma20": ind.close < threshold,
+        "ask_below_threshold": 0.0 < live_ask < threshold,
         "ticked_up": ind.close > ind.prev_close,
         "regime_ok": bool(regime_ok),
         "quote_fresh": True,
@@ -318,6 +327,8 @@ def evaluate_entry(
         "atr20": round(ind.atr20, 6),
         "entry_threshold": round(threshold, 6),
         "distance_below_threshold": round(threshold - ind.close, 6),
+        "live_ask": round(live_ask, 6),
+        "ask_distance_below_threshold": round(threshold - live_ask, 6),
         "quote_age_seconds": quote_age_seconds,
         "spread_pct_of_mid": spread_pct_of_mid,
         "bars_used": ind.bars_used,
@@ -328,7 +339,8 @@ def evaluate_entry(
         return SignalVerdict(
             ind.symbol, True, "SETUP",
             f"close {ind.close:.4f} is {threshold - ind.close:.4f} below the "
-            f"{threshold:.4f} threshold, ticking up, regime clear",
+            f"{threshold:.4f} threshold, ask {live_ask:.4f} also below it, "
+            f"ticking up, regime clear",
             cond, detail,
         )
 

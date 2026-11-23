@@ -217,3 +217,19 @@ the signal set is handed the tick-up condition and asked how it performs with
 and without it. Both are logic that is correct in isolation and unfalsifiable
 where it is wired. The earlier instance was found by an outside reader, and
 so was this one.
+
+---
+
+## Dispositions closed — 2026-11-24
+
+Two of the four findings above were closed by operator decision the same day,
+after this register recorded them. The rows above are left as written, per the
+rule this document follows.
+
+| # | Earlier disposition | Now |
+|---|---|---|
+| N29 | "Open. Closing it means an explicit live-price re-check before submission, which is a strategy change and not taken" | **Closed.** The operator's reading is the one that stands: the registered rule is "price dislocated below SMA20 by 1.5 ATR", and checking a bar close alone let a crossing limit fill above the threshold — an implementation shortfall, not a strategy change. `evaluate_entry` now requires `0 < live_ask < threshold` as an additional AND condition. It can only refuse more entries. The reasoning and the evidence are in `docs/STRATEGY.md` Addendum 3, dated 2026-11-24 |
+| N31 | "Open. The fix is for the decision path to read the order list and account state itself and record the capture time, refusing to proceed past a configured age" | **Closed, as specified.** The order-list input now carries `captured_at_et`; `assert_order_list_fresh` refuses an age outside `[0, max_order_list_age_seconds]` (120) with `STALE_ORDER_LIST`, and the age and bound are recorded on the guard record. A bare list is refused as `GUARD_INPUT_INVALID`. The decision path still takes the operator's capture rather than reading the broker itself; what changed is that the capture time is now data the engine can refuse, not an assumption it inherits. Cycle 5's 288-second capture is a regression test, and a 244-second one runs through the real driver |
+
+N28 and N30 remain open, unchanged.
+

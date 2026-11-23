@@ -57,6 +57,10 @@ class LiveState:
     session_state: SessionState
     positions: tuple[Position, ...]
     equity: float
+    sizing_equity: float
+    foreign_positions: dict[str, int]
+    foreign_market_values: dict[str, float]
+    foreign_market_value: float
     peak_equity: float
     realised_today: float
     closed_trades_today: int
@@ -69,7 +73,20 @@ class LiveState:
 
     def to_ledger(self) -> dict[str, Any]:
         return {
+            # Two numbers, two purposes, both named. `total_asset` is the
+            # reconciliation basis (balance + mv + hold). `equity_basis_for_sizing`
+            # is what the strategy may size against: total_asset minus the market
+            # value of any position we did not open.
+            "total_asset": round(self.equity, 4),
             "equity": round(self.equity, 4),
+            "equity_basis_for_sizing": round(self.sizing_equity, 4),
+            "foreign_positions": {
+                sym: {"qty": qty,
+                      "market_value": round(
+                          self.foreign_market_values.get(sym, 0.0), 4)}
+                for sym, qty in self.foreign_positions.items()
+            },
+            "foreign_market_value": round(self.foreign_market_value, 4),
             "peak_equity": round(self.peak_equity, 4),
             "drawdown_pct": round(
                 (self.peak_equity - self.equity) / self.peak_equity * 100.0, 6
@@ -97,6 +114,7 @@ def reconstruct(
     now_et: datetime,
     broker_equity: float,
     broker_positions: Mapping[str, int],
+    foreign_market_values: Mapping[str, float] | None = None,
     seconds_since_last_cycle_override: float | None = None,
     halted: bool = False,
     halt_reason: str = "",
@@ -108,6 +126,12 @@ def reconstruct(
     the broker says what is. When they disagree the disagreement is the
     finding, so it is surfaced as a warning rather than silently resolved in
     either direction.
+
+    `foreign_market_values` is required whenever the broker reports a symbol
+    outside the configured universe. total_asset still reconciles as
+    balance + mv + hold, but the sizing basis excludes those marks: a position
+    we did not open is not capital this strategy risked, and sizing off it
+    would scale our own orders with someone else's position.
     """
     today = now_et.date()
     warnings: list[str] = []
@@ -189,6 +213,33 @@ def reconstruct(
             f"position mismatch: ledger derives {derived or '{}'}, broker "
             f"reports {broker or '{}'}. The ledger says what we did and the "
             f"broker says what is; this disagreement is itself the finding."
+        )
+
+    # ---- foreign positions: held, not ours, not in the sizing basis ----
+    universe = {str(s) for s in cfg.symbols}
+    foreign = {s: q for s, q in broker.items() if s not in universe}
+    supplied = dict(foreign_market_values or {})
+    if foreign:
+        missing = sorted(s for s in foreign if s not in supplied)
+        if missing:
+            raise IntegrityError(
+                f"broker reports positions outside the universe ({sorted(foreign)}) "
+                f"with no market value supplied for {missing}. total_asset would "
+                f"still reconcile, but the sizing basis cannot exclude what was "
+                f"not valued, so the cycle refuses to derive one."
+            )
+        bad = sorted(s for s in foreign if float(supplied[s]) < 0)
+        if bad:
+            raise IntegrityError(
+                f"negative market value supplied for foreign position(s) {bad}"
+            )
+    foreign_mv = sum(float(supplied[s]) for s in foreign)
+    sizing_equity = broker_equity - foreign_mv
+    if sizing_equity <= 0:
+        raise IntegrityError(
+            f"equity {broker_equity} less foreign market value {foreign_mv} "
+            f"leaves {sizing_equity} as the sizing basis; refusing to size "
+            f"from a non-positive equity"
         )
 
     # ---- equity, peak, drawdown ----
@@ -284,6 +335,10 @@ def reconstruct(
         session_state=state,
         positions=tuple(positions),
         equity=broker_equity,
+        sizing_equity=sizing_equity,
+        foreign_positions=foreign,
+        foreign_market_values={s: float(supplied[s]) for s in foreign},
+        foreign_market_value=foreign_mv,
         peak_equity=peak,
         realised_today=realised_today,
         closed_trades_today=len(todays_exits),

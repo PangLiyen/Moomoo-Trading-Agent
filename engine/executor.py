@@ -181,8 +181,15 @@ def plan_exits(
 
     intents: list[ExitIntent] = []
     verdicts: list[SignalVerdict] = []
+    universe = {str(s) for s in cfg.symbols}
 
     for pos in positions:
+        # A position outside the universe is not ours to manage. It may be a
+        # foreign write (2026-11-23) or a data error, and either way an exit
+        # intent for it would be acting on someone else's trade. It still
+        # appears in every account snapshot; it never becomes an order.
+        if pos.symbol not in universe:
+            continue
         ind = indicators.get(pos.symbol)
         if ind is None:
             intents.append(ExitIntent(

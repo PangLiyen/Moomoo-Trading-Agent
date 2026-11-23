@@ -140,6 +140,21 @@ def test_a_position_with_no_data_exits_immediately_rather_than_holding(cfg):
     assert intents[0].urgency == "immediate"
 
 
+def test_a_position_outside_the_universe_is_not_ours_to_manage(cfg):
+    """5832647 held US.MU, opened by an unattributed writer. That position is
+    not ours to exit, and closing it would be the project making a trade it
+    did not decide. It is excluded outright -- not even a verdict."""
+    plan = plan_session(cfg, datetime(2026, 11, 23, 11, 0))
+    foreign = _pos(symbol="US.MU", qty=1, entry=704.0, atr=5.0, mins_ago=5)
+    intents, verdicts = plan_exits(
+        [foreign, _pos()], {"US.MU": _ind(symbol="US.MU", close=600.0),
+                            "US.SPY": _ind(close=713.0)},
+        cfg, now_et=datetime(2026, 11, 23, 11, 0), plan=plan)
+    assert intents == []
+    assert [v.symbol for v in verdicts] == ["US.SPY"]
+
+
+
 # --------------------------------------------------------------------------
 # Order construction
 # --------------------------------------------------------------------------

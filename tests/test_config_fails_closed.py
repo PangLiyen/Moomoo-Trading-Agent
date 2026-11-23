@@ -153,3 +153,51 @@ def test_rules_hash_changes_when_any_limit_changes(raw, tmp_path):
     raw["sizing"]["risk_per_trade_pct"] = 0.36
     b = _build(raw, tmp_path, "b.yaml")
     assert a.sha256 != b.sha256
+
+
+# --------------------------------------------------------------------------
+# Observe-only -- a stated refusal or no refusal
+# --------------------------------------------------------------------------
+
+def test_observe_only_without_a_reason_is_refused(raw, tmp_path):
+    """An entry refused with no recorded cause is the same defect as a BLOCK
+    record without a reason code."""
+    raw["execution"]["observe_only"] = True
+    raw["execution"]["observe_only_reason"] = "   "
+    with pytest.raises(ConfigError, match="stated reason"):
+        _build(raw, tmp_path)
+
+
+def test_observe_only_merely_absent_is_refused(raw, tmp_path):
+    """Absence is not permission: a deleted flag must not read as a trading
+    system."""
+    del raw["execution"]["observe_only"]
+    with pytest.raises(ConfigError, match="missing flag"):
+        _build(raw, tmp_path)
+
+
+def test_observe_only_reason_key_is_required_even_when_the_flag_is_off(raw, tmp_path):
+    raw["execution"]["observe_only"] = False
+    del raw["execution"]["observe_only_reason"]
+    with pytest.raises(ConfigError, match="observe_only_reason"):
+        _build(raw, tmp_path)
+
+
+def test_observe_only_must_be_a_real_boolean(raw, tmp_path):
+    raw["execution"]["observe_only"] = "yes"
+    with pytest.raises(ConfigError, match="exactly true or false"):
+        _build(raw, tmp_path)
+
+
+def test_the_shipped_config_is_observe_only(cfg):
+    assert cfg.observe_only is True
+    assert cfg.observe_only_reason == (
+        "unattributed writer unresolved, incident 2026-11-23")
+
+
+def test_the_order_list_age_bound_is_required(raw, tmp_path):
+    """N31. The guard's only input had no age limit, and a missing bound must
+    stop the loader rather than default."""
+    del raw["account_integrity"]["max_order_list_age_seconds"]
+    with pytest.raises(ConfigError):
+        _build(raw, tmp_path)

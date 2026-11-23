@@ -155,7 +155,13 @@ def compare_symbol(sym: str, canon: dict) -> dict:
         b = b_series[i]
         if not (WINDOW_FROM <= b["date"] <= WINDOW_TO):
             continue
-        v = esig.evaluate_entry(ind, regime_ok=True, quote_age_seconds=0.0,
+        # live_ask is the bar close here: the historical comparison has no book,
+        # and the point is to compare the dislocation arithmetic with the
+        # independent implementation, which is also bar-close based. On the
+        # live path the ask is the book's, and the gate requires it below the
+        # threshold too (STRATEGY Addendum 3).
+        v = esig.evaluate_entry(ind, regime_ok=True, live_ask=ind.close,
+                                quote_age_seconds=0.0,
                                 spread_pct_of_mid=0.0, now_et=ind.as_of_et)
         if v.qualifies:
             eng_qual.append(b["tk"])

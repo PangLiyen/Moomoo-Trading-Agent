@@ -88,6 +88,51 @@ def account_state_from_api(
     )
 
 
+def split_positions(
+    raw: Mapping[str, Any], universe: Iterable[str],
+) -> tuple[dict[str, int], dict[str, float]]:
+    """Quantity map from the broker's rows, plus market value for foreign symbols.
+
+    A row is either a bare quantity (`{"US.SPY": 20}`) or an object carrying
+    `qty` and, for symbols outside the universe, `market_val`
+    (`{"US.MU": {"qty": 1, "market_val": 704.125}}`).
+
+    The quantity map goes to the account guard and the ledger reconstruction,
+    which cross-check it against what our fills derive. The foreign market
+    value is needed separately: total_asset still has to reconcile as
+    balance + mv + hold, but a position we did not open is not part of the
+    equity the strategy may size against. Value it or refuse -- an unvalued
+    foreign position would silently stay inside the sizing basis.
+    """
+    symbols = {str(s) for s in universe}
+    quantities: dict[str, int] = {}
+    foreign_mv: dict[str, float] = {}
+    for sym, row in raw.items():
+        symbol = str(sym)
+        if isinstance(row, Mapping):
+            qty = int(row.get("qty", 0) or 0)
+            mv = row.get("market_val", row.get("market_value"))
+        else:
+            qty = int(row)
+            mv = None
+        if qty == 0:
+            continue
+        quantities[symbol] = qty
+        if symbol in symbols:
+            continue
+        if mv is None:
+            raise AccountGuardError(
+                f"{symbol} is held ({qty}) but is outside the configured "
+                f"universe (universe.allow_symbols_outside_list is false). Its "
+                f"market value must be supplied as "
+                f'{{"qty": {qty}, "market_val": <usd>}} so the sizing basis can '
+                f"exclude it; without that number the basis would silently "
+                f"include a position this project did not open."
+            )
+        foreign_mv[symbol] = float(mv)
+    return quantities, foreign_mv
+
+
 def ledger_order_ids(records: Iterable[Mapping[str, Any]]) -> set[str]:
     """Order ids our own ledger can account for.
 

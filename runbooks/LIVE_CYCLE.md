@@ -71,9 +71,35 @@ From `sim_trade_position_list`. **Drop zero-quantity stub rows** — moomoo
 leaves them after a close, and a stub read as a position blocks re-entry in
 that symbol for the rest of the day.
 
+In-universe holdings may be a bare quantity. Any position **outside the
+configured universe** (for example `US.MU` from the unattributed writer) must
+carry its market value, because it is excluded from the equity basis position
+sizing uses:
+
+```json
+{"US.SPY": 20, "US.MU": {"qty": 1, "market_val": 704.125}}
+```
+
+An unvalued foreign position halts with `GUARD_INPUT_INVALID` — the basis
+cannot be computed without it. The snapshot records `total_asset` (which
+reconciles as always), `equity_basis_for_sizing` (total asset minus foreign
+market value), and the foreign positions held. Those positions never appear
+in an exit intent.
+
 ### e) Orders → `inputs/orders.json`
 
-Every order id in the account today, as a JSON list.
+Every order id in the account today, **with the time the list was captured**:
+
+```json
+{"captured_at_et": "2026-11-23 10:52:41", "order_ids": ["3128921", "..."]}
+```
+
+A bare list is refused (`GUARD_INPUT_INVALID`): the foreign-order guard's
+answer is only as current as the snapshot it reads. If the capture is more
+than `account_integrity.max_order_list_age_seconds` (120s) old at decision
+time, the cycle halts with `STALE_ORDER_LIST`. Re-read the order list
+immediately before running, not at the start of the session.
+
 
 ---
 
@@ -92,6 +118,13 @@ Every order id in the account today, as a JSON list.
 ```
 
 Add `--fills-json inputs/fills.json` when there are fills to report (§4).
+
+**Observe-only is on in the shipped config** while the unattributed writer is
+unresolved. Every entry is refused with `OBSERVE_ONLY` and the stated reason,
+recorded per symbol with the signal it refused; the cycle still completes and
+exits still plan and submit. A `risk` record with `OBSERVE_ONLY` is expected
+output, not a fault. Any *new* order id the guard cannot attribute still
+halts the cycle, flag or no flag.
 
 ---
 

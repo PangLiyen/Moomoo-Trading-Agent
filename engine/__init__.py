@@ -23,7 +23,10 @@ No module here performs network I/O, reads free text, or consults a model.
 That is what makes the limits enforceable rather than advisory.
 """
 
-from .account import account_state_from_api, describe_guard_inputs, ledger_order_ids
+from .account import (
+    account_state_from_api, describe_guard_inputs, ledger_order_ids,
+    split_positions,
+)
 from .config import RiskConfig
 from .errors import (
     AccountGuardError,
@@ -38,7 +41,10 @@ from .provenance import (
     ENGINE_FILES, describe_code, engine_file_set_hash, last_pinned_commit,
     plan_code_change,
 )
-from .timeutil import assert_quote_fresh, epoch_ms_to_et, quote_age_seconds
+from .timeutil import (
+    assert_order_list_fresh, assert_quote_fresh, epoch_ms_to_et,
+    quote_age_seconds,
+)
 from .report import distance_to_trigger_atr, sort_by_distance
 from .risk_gate import AccountState, GateDecision, RiskGate, SessionState
 from .bars import BarAudit, validate as validate_bars
@@ -57,9 +63,11 @@ from .sizing import SizingResult, size_position
 __all__ = [
     "RiskConfig", "Ledger", "write_genesis", "file_sha256",
     "account_state_from_api", "describe_guard_inputs", "ledger_order_ids",
+    "split_positions",
     "describe_code", "ENGINE_FILES",
     "engine_file_set_hash", "last_pinned_commit", "plan_code_change",
     "epoch_ms_to_et", "quote_age_seconds", "assert_quote_fresh",
+    "assert_order_list_fresh",
     "distance_to_trigger_atr", "sort_by_distance",
     "validate_bars", "BarAudit",
     "reconstruct", "LiveState",

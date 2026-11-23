@@ -354,3 +354,60 @@ The general rule this project is applying: **the original document never
 changes; corrections are appended with dates and reasons.** The same rule
 produced Addendum 1, and the same rule is why `I5` was restated in a new
 condition `I5′` rather than rewritten in place.
+
+---
+
+# ADDENDUM 3 — The entry price must satisfy the entry rule, 2026-11-24
+
+Found by comparing the recorded XLE signal at cycle `C20261123T1052` against
+the book it was captured with, not by a backtest. Everything above is
+untouched.
+
+## N29 — what was wrong
+
+Section 4 registers the entry as: *"`close < SMA20 − (1.5 × ATR20)` — the
+dislocation."* The implementation tested exactly that, on the last closed
+bar, and the order that followed is a crossing limit, which prices near the
+ask. On 2026-11-23 that gap was visible: the XLE bar closed at **60.35**
+against a threshold of **60.3688**, and the captured ask was **60.42**. Every
+recorded condition said "dislocated"; the price that would have been paid was
+0.0512 *above* the threshold, outside the registered rule. A bar-close test
+alone permitted a fill that violated the rule it was checking.
+
+## The change
+
+`evaluate_entry` now also requires the live ask to be strictly below the same
+threshold:
+
+```
+ask_below_threshold = 0 < live_ask < SMA20 − 1.5 × ATR20
+```
+
+The ledger detail records `live_ask` and the distance below the threshold, so
+the price the rule was applied to is evidence rather than a restatement of the
+bar. A missing or zero ask fails the condition.
+
+## Why this is not a strategy change
+
+- The registered rule already named the price paid: "price dislocated below
+  SMA20 by 1.5 ATR". Checking the bar close alone was an **implementation
+  shortfall** — it tested a proxy for the price rather than the price. This
+  addendum makes the implementation match the rule; it does not alter the
+  rule.
+- The condition is an additional `AND`. It can only ever **refuse more
+  entries, never create one**. No entry, exit, sizing or risk parameter
+  changes. On 2026-11-23 it would have refused XLE at 60.42 and accepted
+  nothing it would not have rejected before.
+- It is the same finding class as N31 and the quote-staleness fix: a safety
+  decision taken on an input that did not measure the thing the decision
+  claimed to measure.
+
+## What it means for measurement
+
+Any later count of "qualifying signals" produced by the old bar-only rule
+is an upper bound under the corrected rule. The 170-signal measurement in
+Addendum 1 and the invalidations on I1–I3 are not re-opened by this change:
+the corrected condition can only remove signals, and those signals already
+lost at those rates. A strategy invalidated on a superset is invalidated on
+a subset; the invalidation stands.
+

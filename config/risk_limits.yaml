@@ -71,6 +71,13 @@ account_integrity:
   # Reconcile on EVERY cycle: pull the account's full order list and compare it
   # against our ledger. Any order we cannot account for is a foreign write.
   reconcile_order_list_every_cycle: true
+  # N31, 2026-11-24. The guard's answer is only as current as the snapshot it
+  # reads, and that snapshot had no age bound: cycle 5 on 11-23 decided on a
+  # 10:47:56 capture while a foreign order was created at 10:52:29, so the
+  # guard passed on a state that predated the event it exists to detect. The
+  # order-list input now carries its capture time and the guard refuses an
+  # age outside [0, this bound] rather than attesting to what it cannot see.
+  max_order_list_age_seconds: 120
   on_untagged_order_detected: halt        # not "warn", not "ignore"
   # Second fingerprint, independent of the tag: both foreign orders used
   # order_trade_time_type 2 (extended hours). We set 1 unconditionally, so a
@@ -80,7 +87,16 @@ account_integrity:
   reconcile_positions_every_cycle: true
   on_unexplained_position: flatten_and_halt
   # Baseline. Anything outside this set at session start is foreign.
-  known_foreign_order_ids: ["3128921", "3128965"]
+  known_foreign_order_ids:
+    - "3128921"   # 2026-11-20 ANT buy  09:55:36 ET, text "", time type 2
+    - "3128965"   # 2026-11-20 ANT sell 10:04:55 ET, text "", time type 2
+    # 2026-11-23 incident: both MU, both text "" and time type 2 — the same
+    # two-field fingerprint as the 11-20 pair. 3131737 filled 1 share at
+    # 704.055; 3131738 was cancelled unfilled. Acknowledged here so the
+    # known position does not halt every cycle, NOT because they are ours.
+    # See docs/INCIDENT_2026-11-23_FOREIGN_WRITER.md.
+    - "3131737"
+    - "3131738"
   # Our own orders from the Session 00 capability probe, placed by a supervised
   # operator BEFORE the ledger existed. They are ours, not foreign, and saying
   # so here is more accurate than adding them to the foreign list. Without this
@@ -359,6 +375,12 @@ data_quality:
 # EXECUTION
 # ---------------------------------------------------------------------------
 execution:
+  # OBSERVE ONLY — set 2026-11-24 while 5832647 holds a position this project
+  # did not open. Every entry is refused with reason_code OBSERVE_ONLY and this
+  # reason string; exits still plan and remain executable. The cycle does not
+  # halt. The loader refuses to start if the flag is true and the reason empty.
+  observe_only: true
+  observe_only_reason: "unattributed writer unresolved, incident 2026-11-23"
   order_type: 1                     # 1=Limit. MEASURED: enum is only {1 Limit, 3 Market}
   # MEASURED: sim_trade_input_order exposes NO time_in_force parameter at all.
   # Unfilled-order lifetime is therefore unknown until measured — we cancel our own.

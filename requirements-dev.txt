@@ -2,5 +2,5 @@
 
 # Test suite. The tests are the evidence for the submission's central claim,
 # so running them is part of the build, not an optional extra:
-#     python3 -m pytest tests/ -q      -> 169 passing
+#     python3 -m pytest tests/ -q      -> 261 passing
 pytest>=8.0

@@ -267,7 +267,7 @@ The commit a ledger claims to come from is **derived from git and verified** to
 contain every engine file, and per-file dirty state is recorded — because a
 correct commit still does not describe running code when the tree is modified.
 
-**Verification:** `pytest tests/ -q` → 165 passed;
+**Verification:** `pytest tests/ -q` → 261 passed;
 `pytest tests/test_provenance_is_verified.py`.
 
 ## B7. How are untrusted inputs handled?
@@ -287,12 +287,41 @@ Both are declared data sources in config and may never influence order
 submission, sizing, stop levels, risk values, account selection or universe
 membership.
 
-**This control is specified and not yet demonstrated.** The adversarial test
-corpus is not built. We report that as an open gap rather than describing the
-boundary as proven.
+### What actually enforces the boundary
 
-**Verification:** `config/risk_limits.yaml` `untrusted_input`;
-`docs/API_CAPABILITIES.md`.
+Not a filter. **No function in the decision path accepts text from a feed at
+all.** `size_position` takes floats; `evaluate_entry` takes an Indicators
+object and booleans; the gate reads counts, prices and timestamps;
+`build_order` emits enums and strings we construct ourselves. A payload that
+cannot be an argument cannot be an exploit, and that is a stronger property
+than any amount of sanitising.
+
+**92 adversarial tests** fire a corpus at every engine entry point. The
+corpus is modelled on the measured field shapes rather than invented ones —
+a ~47-character unmoderated community title, a ~3,000-character HTML news
+body with anchors and `futunn://` deep links, and an `abstract` truncated at
+exactly 200 characters mid-token so a payload can straddle the boundary and
+look harmless in one field.
+
+Each payload must either be **rejected by type** or leave the numeric output
+**bit-for-bit identical**. Separately, no `engine/` module imports any HTTP
+client, so the decision path has no inbound channel to defend.
+
+`engine/untrusted.py` handles the narrow case where untrusted text *is* read,
+for regime commentary or human research context. It classifies, quarantines
+the payload **verbatim**, and emits an `INJECTION_SUSPECTED` record stating
+that nothing was reached and why. It deliberately does not sanitise text for
+reuse: a sanitiser invites the belief that cleaned text is then safe to act
+on. It also reports any **new** text field a feed starts returning, because
+the attack surface is not static.
+
+**Still open:** no adversarial payload has yet been run through a live
+`news_search` call. The corpus is built from measured shapes, not from a
+live injection, and we say so rather than claiming the boundary has been
+tested end to end in production.
+
+**Verification:** `pytest tests/test_injection_resistance.py` → 92 passed;
+`config/risk_limits.yaml` `untrusted_input`; `docs/API_CAPABILITIES.md`.
 
 ## B8. What is currently broken or unproven?
 
@@ -413,7 +442,7 @@ looser definition.
 |---|---|
 | Spec predates trading | `git show 5748462:docs/STRATEGY.md \| shasum -a 256` → `d2295d99…` |
 | Config predates trading | `git show 5748462:config/risk_limits.yaml \| shasum -a 256` → `c0ca0cf8…` |
-| Whole suite | `pytest tests/ -q` → 165 passed |
+| Whole suite | `pytest tests/ -q` → 261 passed |
 | Limits enforced, not advised | `pytest tests/test_risk_gate.py` |
 | Sizing deterministic | `pytest tests/test_sizing_determinism.py` |
 | Config fails closed | `pytest tests/test_config_fails_closed.py` |
@@ -422,6 +451,7 @@ looser definition.
 | Indicators causal | `pytest tests/test_outlier_filter_is_causal.py` |
 | Provenance verified | `pytest tests/test_provenance_is_verified.py` |
 | Driver wiring | `pytest tests/test_driver_integration.py` |
+| Injection resistance | `pytest tests/test_injection_resistance.py` → 92 passed |
 | Chain intact | `python3 -c "import sys;sys.path.insert(0,'.');from engine import Ledger;print(Ledger('logs/decisions.jsonl').verify_report())"` |
 | Measurements reproducible | `python3 analysis/measure_signal_rate.py --extend` |
 | Hypothesis tests reproducible | `python3 analysis/test_hypotheses.py` |

@@ -12,6 +12,7 @@ Layering, strictest first. Nothing in a lower layer imports a higher one.
     sizing      pure function: inputs -> quantity, with its arithmetic
     risk_gate   the last gate; may only tighten or refuse
     session_state  live state derived from the ledger, never a side file
+    untrusted   quarantines third-party text; records, never sanitises
     executor    exits, order intents, and the records that make the
                 pre-registered predictions measurable. No network access:
                 it emits intents, it cannot submit them
@@ -40,6 +41,10 @@ from .executor import (
     record_submission, write_intents,
 )
 from .session_state import LiveState, reconstruct
+from .untrusted import (
+    PLATFORM_FIELDS, UNTRUSTED_FIELDS, Quarantined, classify,
+    injection_record, quarantine, scan_items, unexpected_text_fields,
+)
 from .sizing import SizingResult, size_position
 
 __all__ = [
@@ -52,6 +57,8 @@ __all__ = [
     "build_order", "crossing_limit", "write_intents",
     "record_submission", "record_fill", "record_exit",
     "record_account_snapshot",
+    "classify", "quarantine", "scan_items", "unexpected_text_fields",
+    "injection_record", "Quarantined", "UNTRUSTED_FIELDS", "PLATFORM_FIELDS",
     "size_position", "SizingResult",
     "RiskGate", "AccountState", "SessionState", "GateDecision",
     "EngineError", "ConfigError", "AccountGuardError", "IntegrityError",

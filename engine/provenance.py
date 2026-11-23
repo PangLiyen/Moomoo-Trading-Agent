@@ -52,6 +52,7 @@ ENGINE_FILES = (
     "engine/signal.py",
     "engine/bars.py",
     "engine/session_state.py",
+    "engine/untrusted.py",
     "engine/risk_gate.py",
     "engine/executor.py",
     "run_cycle.py",

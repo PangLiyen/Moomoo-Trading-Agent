@@ -26,7 +26,7 @@ estimate of it, in both directions, and a poor reason to change what we trade.
 
 | Criterion | Weight | Where we are | Estimate |
 |---|---|---|---|
-| Strategy & risk design | 30% | Pre-committed spec, invalidation on three published conditions, 308 tests, self-commissioned audit publishing 29 defects, train/test overfitting demonstration, crisis-sourced correlation tightening | **strong, 25–28** |
+| Strategy & risk design | 30% | Pre-committed spec, invalidation on three published conditions, 310 tests, self-commissioned audit publishing 39 defects, train/test overfitting demonstration, crisis-sourced correlation tightening | **strong, 25–28** |
 | **Qoder & Cloud Agent usage** | **30%** | **Nothing deployed.** No Cloud Agents runtime, no multi-agent orchestration, no Forward Mode schedule, no Slack delivery, no dashboard, no packaged skills | **weak, 5–10** |
 | Risk-adjusted return | 25% | Zero strategy trades. Strategy has no measured edge and is invalidated | **weak, 5–10** |
 | Reusability & documentation | 15% | Eleven documents, a runbook, reproducible analysis scripts — **but no slides and no packaged skills**, both named in the criterion | **good, 9–12** |

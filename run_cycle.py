@@ -49,11 +49,13 @@ sys.path.insert(0, str(ROOT))
 
 from engine import (  # noqa: E402
     AccountGuardError, Ledger, RiskConfig, RiskGate, RiskViolation,
-    StaleDataError, account_state_from_api, build_order, crossing_limit,
-    describe_code, describe_guard_inputs, file_sha256, ledger_order_ids,
+    StaleDataError, account_state_from_api, assert_quote_fresh, build_order,
+    crossing_limit, describe_code, describe_guard_inputs,
+    distance_to_trigger_atr, engine_file_set_hash, epoch_ms_to_et,
+    file_sha256, last_pinned_commit, ledger_order_ids, plan_code_change,
     plan_exits, plan_session, record_account_snapshot, record_exit,
     record_fill, record_submission, reconstruct, size_position,
-    validate_bars, write_intents, write_genesis,
+    sort_by_distance, validate_bars, write_intents, write_genesis,
 )
 from engine.signal import (  # noqa: E402
     Bar, compute_indicators, evaluate_entry, regime_ok_from_spy,
@@ -79,16 +81,13 @@ def _pick(row: dict, field: str):
 def _parse_ts(value) -> datetime:
     """Bar timestamps are ET wall-clock.
 
-    An earlier version ran utcfromtimestamp on `time_key` values that were
-    already ET, shifting every logged bar time by five hours.
+    Numeric `time_key` values convert through engine.timeutil, the single
+    epoch -> ET helper. This function did its own arithmetic once and shifted
+    every logged bar time by five hours; there is no second conversion path
+    left here to drift.
     """
-    from datetime import timedelta, timezone
     if isinstance(value, (int, float)):
-        secs = value / 1000.0 if value > 1e11 else float(value)
-        # timezone-aware then stripped, rather than the deprecated
-        # utcfromtimestamp. EST is fixed across the competition window.
-        utc = datetime.fromtimestamp(secs, tz=timezone.utc).replace(tzinfo=None)
-        return utc - timedelta(hours=5)
+        return epoch_ms_to_et(value)
     text = str(value).strip().replace("T", " ").replace("Z", "")
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
@@ -177,6 +176,24 @@ def main() -> int:
         print(f"WARNING engine modified on disk: {code['engine_files_dirty']}")
 
     cycle_id = f"C{now_et:%Y%m%dT%H%M}"
+
+    # A cycle record pins its own commit, so an engine change mid-chain is
+    # visible inside the chain instead of only to someone diffing commits.
+    # Written before any record for this cycle.
+    previous_pin = last_pinned_commit(led.records())
+    change = plan_code_change(
+        led.records(),
+        current_commit=code["code_commit"],
+        current_file_set_hash=engine_file_set_hash(ROOT, code["code_commit"]),
+        previous_file_set_hash=(
+            engine_file_set_hash(ROOT, previous_pin) if previous_pin else None),
+    )
+    if change:
+        change["cycle_id"] = cycle_id
+        led.append(change)
+        print(f"CODE CHANGE  {previous_pin[:12]} -> "
+              f"{code['code_commit_short']}  recorded in chain")
+
     plan = plan_session(cfg, now_et)
     led.append({"cycle_id": cycle_id, "stage": "session_plan",
                 "verdict": "OBSERVED", "reason_code": "SESSION_RESOLVED",
@@ -190,7 +207,8 @@ def main() -> int:
         led.append({"cycle_id": cycle_id, "stage": "cycle", "verdict": "HALT",
                     "reason_code": "NOT_A_TRADING_DAY",
                     "reason_text": f"{plan.trading_date} is {plan.status}: "
-                                   f"{plan.note}"})
+                                   f"{plan.note}",
+                    "code_commit": code["code_commit"]})
         print(f"HALT  {plan.trading_date} is {plan.status}. {plan.note}")
         return 0
 
@@ -293,7 +311,8 @@ def main() -> int:
                     "reason_text": str(exc), "inputs": guard_inputs})
         led.append({"cycle_id": cycle_id, "stage": "cycle", "verdict": "HALT",
                     "reason_code": getattr(exc, "reason_code", "ACCOUNT_GUARD_FAIL"),
-                    "reason_text": "cycle halted at the account guard"})
+                    "reason_text": "cycle halted at the account guard",
+                    "code_commit": code["code_commit"]})
         print(f"\nHALT -- account guard: {exc}")
         return 2
     led.append({"cycle_id": cycle_id, "stage": "account_guard",
@@ -361,11 +380,32 @@ def main() -> int:
     from dataclasses import replace as _replace
     acct_for_entries = _replace(acct, open_positions=held_after_exits)
 
-    print(f"\n{'sym':9s}{'close':>10s}{'sma20':>11s}{'atr20':>9s}"
-          f"{'threshold':>11s}  verdict")
+    max_age = float(cfg.section("data_quality")["max_quote_age_seconds"])
+    display: list[dict[str, Any]] = []
     for sym, ind in indicators.items():
         q = quotes.get(sym, {})
         age = float(q.get("book_age_seconds", 1e9))
+        try:
+            assert_quote_fresh(age, max_age)
+        except StaleDataError as exc:
+            negative = age < 0
+            led.append({"cycle_id": cycle_id, "stage": "data_quality",
+                        "symbol": sym,
+                        "verdict": "HALT" if negative else "BLOCK",
+                        "reason_code": ("NEGATIVE_QUOTE_AGE" if negative
+                                        else "STALE_QUOTE"),
+                        "reason_text": str(exc),
+                        "quote_age_seconds": age})
+            print(f"  {sym}: {exc}")
+            if negative:
+                led.append({"cycle_id": cycle_id, "stage": "cycle",
+                            "verdict": "HALT",
+                            "reason_code": "NEGATIVE_QUOTE_AGE",
+                            "reason_text": "quote age is negative: the cycle "
+                                           "cannot date its data and stops",
+                            "code_commit": code["code_commit"]})
+                return 2
+            continue
         mid = (float(q.get("bid") or 0) + float(q.get("ask") or 0)) / 2
         spread_pct = (
             (float(q["ask"]) - float(q["bid"])) / mid * 100.0
@@ -375,7 +415,7 @@ def main() -> int:
         sig = evaluate_entry(
             ind, regime_ok=regime_ok, quote_age_seconds=age,
             spread_pct_of_mid=spread_pct, now_et=now_et,
-            max_quote_age_seconds=float(cfg.section("data_quality")["max_quote_age_seconds"]),
+            max_quote_age_seconds=max_age,
             max_spread_pct_of_mid=float(cfg.section("data_quality")["max_spread_pct_of_mid"]),
             entry_window=(plan.earliest_entry_et, plan.latest_entry_et),
         )
@@ -385,11 +425,16 @@ def main() -> int:
                     "reason_text": sig.reason_text, "inputs": ind.to_ledger(),
                     "conditions": sig.conditions, "detail": sig.detail})
 
-        row = (f"{sym:9s}{ind.close:10.4f}{ind.sma20:11.4f}{ind.atr20:9.4f}"
-               f"{sig.detail['entry_threshold']:11.4f}  ")
+        row = {"symbol": sym, "close": ind.close, "sma20": ind.sma20,
+               "atr20": ind.atr20,
+               "threshold": sig.detail["entry_threshold"],
+               "distance_atr": distance_to_trigger_atr(
+                   ind.close, sig.detail["entry_threshold"], ind.atr20)}
         if not sig.qualifies:
-            print(row + "no setup (" +
-                  ", ".join(k for k, v in sig.conditions.items() if not v) + ")")
+            row["action"] = ("no setup (" +
+                             ", ".join(k for k, v in sig.conditions.items()
+                                       if not v) + ")")
+            display.append(row)
             continue
 
         try:
@@ -399,7 +444,8 @@ def main() -> int:
             led.append({"cycle_id": cycle_id, "stage": "sizing", "symbol": sym,
                         "verdict": "BLOCK", "reason_code": exc.reason_code,
                         "reason_text": exc.detail})
-            print(row + f"BLOCK {exc.reason_code}")
+            row["action"] = f"BLOCK {exc.reason_code}"
+            display.append(row)
             continue
 
         decision = gate.evaluate_entry(proposal, acct=acct_for_entries,
@@ -412,7 +458,8 @@ def main() -> int:
                     "proposed": proposal.to_ledger(),
                     "risk_checks": decision.to_ledger()})
         if decision.verdict == "BLOCK":
-            print(row + f"BLOCK {decision.reason_code}")
+            row["action"] = f"BLOCK {decision.reason_code}"
+            display.append(row)
             continue
 
         price = crossing_limit(cfg, side="BUY", bid=float(q["bid"]),
@@ -426,14 +473,23 @@ def main() -> int:
         orders.append(order)
         held_after_exits[sym] = decision.qty_out
         acct_for_entries = _replace(acct, open_positions=held_after_exits)
-        print(row + f"{decision.verdict} qty {decision.qty_out} @ {price:.2f}")
+        row["action"] = f"{decision.verdict} qty {decision.qty_out} @ {price:.2f}"
+        display.append(row)
+
+    print(f"\n{'sym':9s}{'close':>10s}{'sma20':>11s}{'atr20':>9s}"
+          f"{'threshold':>11s}{'d_atr':>8s}  verdict")
+    for r in sort_by_distance(display):
+        print(f"{r['symbol']:9s}{r['close']:10.4f}{r['sma20']:11.4f}"
+              f"{r['atr20']:9.4f}{r['threshold']:11.4f}"
+              f"{r['distance_atr']:8.2f}  {r['action']}")
 
     # ---- 10. intents ----
     led.append({"cycle_id": cycle_id, "stage": "cycle",
                 "verdict": "ORDERS_PENDING" if orders else "NO_ACTION",
                 "reason_code": "CYCLE_COMPLETE",
                 "reason_text": f"{len(orders)} order(s) awaiting submission"
-                               if orders else "cycle complete; no action"})
+                               if orders else "cycle complete; no action",
+                "code_commit": code["code_commit"]})
 
     if orders:
         out_dir = Path(args.intents_out)

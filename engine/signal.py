@@ -24,6 +24,8 @@ from datetime import datetime, time
 from statistics import median
 from typing import Any, Sequence
 
+from .timeutil import assert_quote_fresh
+
 ET_SESSION_OPEN = time(9, 30)
 ET_SESSION_CLOSE = time(16, 0)
 
@@ -290,14 +292,21 @@ def evaluate_entry(
     entry_window: tuple[time, time] = (time(10, 0), time(15, 0)),
 ) -> SignalVerdict:
     """All conditions must hold. Each is reported separately so the ledger
-    shows which one failed rather than only that something did."""
+    shows which one failed rather than only that something did.
+
+    Freshness is an assertion, not a condition: an age outside [0, max] raises
+    StaleDataError rather than returning NO_SETUP, because a book whose age
+    cannot be placed (negative) or that is too old is a data fault the cycle
+    must surface, not a market reading it may silently decline.
+    """
     threshold = ind.sma20 - dislocation_atr_mult * ind.atr20
+    assert_quote_fresh(quote_age_seconds, max_quote_age_seconds)
 
     cond = {
         "dislocated_below_sma20": ind.close < threshold,
         "ticked_up": ind.close > ind.prev_close,
         "regime_ok": bool(regime_ok),
-        "quote_fresh": quote_age_seconds <= max_quote_age_seconds,
+        "quote_fresh": True,
         "spread_tight": spread_pct_of_mid <= max_spread_pct_of_mid,
         "within_entry_window": entry_window[0] <= now_et.time() < entry_window[1],
     }

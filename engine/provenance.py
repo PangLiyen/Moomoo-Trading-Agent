@@ -26,9 +26,10 @@ dirty engine is reported rather than quietly pinned.
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from .errors import ConfigError
 
@@ -53,6 +54,8 @@ ENGINE_FILES = (
     "engine/bars.py",
     "engine/session_state.py",
     "engine/untrusted.py",
+    "engine/timeutil.py",
+    "engine/report.py",
     "engine/risk_gate.py",
     "engine/executor.py",
     "run_cycle.py",
@@ -158,4 +161,71 @@ def describe_code(repo: str | Path, *, require_clean: bool = False) -> dict[str,
                "; NOTE engine files are modified on disk, so the running code "
                "differs from this commit")
         ),
+    }
+
+
+def last_pinned_commit(records: Iterable[Mapping[str, Any]]) -> str | None:
+    """The commit pinned by the chain's most recent decision.
+
+    Cycle records carry their own `code_commit`, so a chain that spans engine
+    changes has no single pin -- which is the point of `plan_code_change`:
+    the change is recorded rather than left for an auditor to find by
+    diffing commits. Older ledgers predate the field on cycle records, so
+    any record that carries a pin is accepted as a fallback.
+    """
+    ordered = list(records)
+    for rec in reversed(ordered):
+        if rec.get("stage") in ("cycle", "code_change") and rec.get("code_commit"):
+            return str(rec["code_commit"])
+    for rec in reversed(ordered):
+        if rec.get("code_commit"):
+            return str(rec["code_commit"])
+    return None
+
+
+def engine_file_set_hash(repo: str | Path, commit: str) -> str | None:
+    """Digest of which ENGINE_FILES exist at `commit`.
+
+    Deliberately the file SET, not the contents: contents are what the commit
+    hash already covers. The set answers the different question of whether
+    the engine gained or lost a module between two pins.
+    """
+    code, listing = _git(Path(repo), "ls-tree", "-r", "--name-only", commit)
+    if code != 0:
+        return None
+    present = set(listing.splitlines())
+    kept = [f for f in ENGINE_FILES if f in present]
+    return hashlib.sha256("\n".join(kept).encode("utf-8")).hexdigest()
+
+
+def plan_code_change(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    current_commit: str,
+    current_file_set_hash: str | None,
+    previous_file_set_hash: str | None = None,
+) -> dict[str, Any] | None:
+    """A `code_change` record when the pin moved, otherwise None.
+
+    The returned record names both commits and both file-set hashes, and
+    carries `code_commit` for the new pin so that appending it once makes the
+    next cycle agree and the record is not repeated.
+    """
+    previous = last_pinned_commit(records)
+    if not previous or previous == current_commit:
+        return None
+    return {
+        "stage": "code_change",
+        "verdict": "OBSERVED",
+        "reason_code": "CODE_COMMIT_CHANGED",
+        "reason_text": (
+            f"engine commit changed mid-chain: {previous[:12]} -> "
+            f"{current_commit[:12]}. Recorded inside the chain so the change "
+            f"is visible without diffing commits."
+        ),
+        "code_commit": current_commit,
+        "from": {"code_commit": previous,
+                 "engine_file_set_hash": previous_file_set_hash},
+        "to": {"code_commit": current_commit,
+               "engine_file_set_hash": current_file_set_hash},
     }

@@ -35,7 +35,7 @@ from datetime import datetime, time
 from typing import Any, Literal, Sequence
 
 from .config import RiskConfig
-from .errors import AccountGuardError, RiskViolation
+from .errors import AccountGuardError, RiskViolation, StaleDataError
 from .sizing import SizingResult
 
 Verdict = Literal["APPROVE", "SHRINK", "BLOCK"]
@@ -243,6 +243,15 @@ class RiskGate:
         passed.append("cycle_cadence_ok")
 
         # --- data quality: refuse to act on data we cannot date ---
+        # A negative age is a defect, not a decision: raise, because a BLOCK
+        # record would be written as if the data had been read. Too-old stays
+        # a recorded BLOCK -- the quote is real, just late -- and is also
+        # asserted upstream by signal.evaluate_entry.
+        if not (quote_age_seconds >= 0):
+            raise StaleDataError(
+                f"quote age {quote_age_seconds!r}s is negative: the timestamp "
+                f"cannot be placed on the clock, so freshness is unproven"
+            )
         dq = self.cfg.section("data_quality")
         if quote_age_seconds > float(dq["max_quote_age_seconds"]):
             return block(

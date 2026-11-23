@@ -7,6 +7,8 @@ Layering, strictest first. Nothing in a lower layer imports a higher one.
     config      fail-closed loader for risk_limits.yaml
     account     AccountState built from broker data only, never from config
     provenance  derives and verifies the commit a ledger claims to come from
+    timeutil    the one epoch -> ET conversion and freshness assertion
+    report      the cycle table: ordered by distance to trigger
     bars        RTH and interval validation at the data boundary
     signal      indicators and the entry/exit rules
     sizing      pure function: inputs -> quantity, with its arithmetic
@@ -32,7 +34,12 @@ from .errors import (
     StaleDataError,
 )
 from .ledger import Ledger, file_sha256, write_genesis
-from .provenance import ENGINE_FILES, describe_code
+from .provenance import (
+    ENGINE_FILES, describe_code, engine_file_set_hash, last_pinned_commit,
+    plan_code_change,
+)
+from .timeutil import assert_quote_fresh, epoch_ms_to_et, quote_age_seconds
+from .report import distance_to_trigger_atr, sort_by_distance
 from .risk_gate import AccountState, GateDecision, RiskGate, SessionState
 from .bars import BarAudit, validate as validate_bars
 from .executor import (
@@ -51,6 +58,9 @@ __all__ = [
     "RiskConfig", "Ledger", "write_genesis", "file_sha256",
     "account_state_from_api", "describe_guard_inputs", "ledger_order_ids",
     "describe_code", "ENGINE_FILES",
+    "engine_file_set_hash", "last_pinned_commit", "plan_code_change",
+    "epoch_ms_to_et", "quote_age_seconds", "assert_quote_fresh",
+    "distance_to_trigger_atr", "sort_by_distance",
     "validate_bars", "BarAudit",
     "reconstruct", "LiveState",
     "plan_session", "SessionPlan", "plan_exits", "ExitIntent",

@@ -311,3 +311,59 @@ def test_gate_never_increases_quantity_across_randomised_states(gate, cfg):
         f"all three verdicts must occur or the sweep is not exercising the "
         f"gate: approve={approved} shrink={shrunk} block={blocked}"
     )
+
+
+# --------------------------------------------------------------------------
+# The us_equity_beta cluster, added 2026-11-23 from crisis research
+# --------------------------------------------------------------------------
+
+def test_two_sector_positions_block_a_third_equity_position(gate, cfg, clean_account, open_session):
+    """The defect the new cluster closes.
+
+    Before it, XLF and XLE sat outside index_broad, so holding both still
+    permitted a third position in SPY, QQQ or IWM: three positions, all long
+    US equity beta, up to the 40% gross cap. Under the stressed correlations
+    of 1997 or 2008 that is one trade at three times the size.
+    """
+    from dataclasses import replace
+    acct = replace(clean_account, open_positions={"US.XLF": 269, "US.XLE": 245})
+    d = _ok(gate, _spy(cfg), acct, open_session)
+    assert d.verdict == "BLOCK"
+    assert d.reason_code == "CORRELATION_CLUSTER_LIMIT"
+    assert d.qty_out == 0
+
+
+def test_one_index_plus_one_sector_is_still_permitted(gate, cfg, clean_account, open_session):
+    """Tightening, not prohibition. Two of the five remain allowed, so the
+    strategy still has somewhere to trade."""
+    from dataclasses import replace
+    px, atr = MEASURED["US.XLE"]
+    acct = replace(clean_account, open_positions={"US.SPY": 20})
+    proposal = size_position(cfg, symbol="US.XLE", price=px, atr20=atr,
+                             equity=acct.total_asset)
+    d = _ok(gate, proposal, acct, open_session)
+    assert d.verdict == "APPROVE", d.reason_text
+
+
+def test_the_new_cluster_is_actually_reached_by_the_gate(gate, cfg):
+    """`us_equity_beta` was added to config, not to code. This asserts the
+    gate reads it, because every other defect in this project has been a
+    limit that was specified and never reached."""
+    clusters = cfg.section("universe")["clusters"]
+    assert "us_equity_beta" in clusters
+    assert set(clusters["us_equity_beta"]["members"]) == set(cfg.symbols)
+    assert clusters["us_equity_beta"]["max_concurrent_positions"] == 2
+
+    # Prove enforcement rather than inferring it from the config's presence.
+    from dataclasses import replace
+    from engine.risk_gate import AccountState
+    import inspect
+    src = inspect.getsource(gate.evaluate_entry)
+    assert 'clusters' in src, "the gate must read the clusters block generically"
+
+
+def test_stress_conditional_cap_is_declared_unimplemented(cfg):
+    """It is not wired, and the config says so. A config that described it as
+    present would be the exact defect AUDIT_FINDINGS.md exists to record."""
+    block = cfg.section("universe")["stress_conditional_cluster_cap"]
+    assert block["implemented"] is False

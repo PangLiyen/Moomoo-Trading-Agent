@@ -99,8 +99,14 @@ Do not re-derive these; they cost a live probe session. Full working in
 `US.SPY`, `US.QQQ`, `US.IWM`, `US.XLF`, `US.XLE`. Nothing else, ever.
 Long only. No shorting, no options, no margin, no leveraged or inverse products.
 
-`SPY`/`QQQ`/`IWM` are one correlation cluster — at most **one** concurrent position
-across all three.
+Two correlation clusters, both enforced by the gate:
+- `SPY`/`QQQ`/`IWM` — at most **one** concurrent position across the three
+- all five symbols — at most **two** concurrent positions in total
+
+The second was added 2026-11-23. XLF and XLE previously sat outside the index
+cluster, so three simultaneous long-equity-beta positions were permitted. Under
+the stressed correlations of 1997 or 2008 that is one trade at triple size.
+Reasoning in `docs/RESEARCH_CRISIS_AND_ALLOCATORS.md`.
 
 ---
 
@@ -127,7 +133,7 @@ Anything not explicitly permitted in the config is forbidden.
 | `docs/COMPETITION_BRIEF.md` | Scoring, field, timeline, team structure |
 | `CONTEXT.md` | Project state: what is decided, measured, and still open |
 | `engine/` | Deterministic core. No network I/O, no free text, no model |
-| `tests/` | 107 tests. The evidence for "the model cannot break the rules" |
+| `tests/` | 165 tests. The evidence for "the model cannot break the rules" |
 
 If this file and one of those disagree, those win — and fix this file.
 
@@ -135,7 +141,7 @@ If this file and one of those disagree, those win — and fix this file.
 
 ## 8. Before you change engine/ or config/
 
-Run the suite: `python3 -m pytest tests/ -q`. It should report **107 passed**.
+Run the suite: `python3 -m pytest tests/ -q`. It should report **165 passed**.
 
 If that number and the suite disagree, the number is what is stale -- the count
 is quoted in several files and drifts when tests are added. Trust pytest, then fix

@@ -110,6 +110,50 @@ universe:
     index_broad:
       members: [US.SPY, US.QQQ, US.IWM]
       max_concurrent_positions: 1     # correlation guard
+
+    # ADDED 2026-11-23, before the first strategy trade. Tightening only.
+    #
+    # index_broad stopped one level short. XLF and XLE sat outside it, so the
+    # permitted worst case was one index ETF plus XLF plus XLE: three
+    # positions, up to the 40% gross cap, every one long US equity beta. In
+    # calm conditions sector dispersion makes that look like three bets.
+    #
+    # 1997: investors treated a whole region as one asset class and pulled
+    # capital indiscriminately; assets uncorrelated in calm markets moved in
+    # lockstep. The BIS recorded institutions with no direct Asia exposure
+    # losing money on diversified-looking books held "on the theory that the
+    # usual correlation among returns in that asset class" would hold.
+    #
+    # 2008: the Gaussian copula assumed a stable correlation parameter
+    # calibrated on 2003-2006 and never updated for stress. The standing
+    # lesson from the model-risk literature is to use crisis-calibrated
+    # correlations, not average-period estimates, and to test what happens
+    # when correlations approach 1.0.
+    #
+    # Under a correlation of 1 these five instruments are one trade. Capping
+    # the set at 2 means a stressed book is at most two-thirds the size the
+    # old limits permitted.
+    #
+    # Justified entirely by evidence OUTSIDE our measurement window, and it
+    # cannot improve any result we have reported -- it can only reduce the
+    # number of positions permitted. That is the sole category of change
+    # STRATEGY.md section 8 allows the risk auditor to make: "Tighten,
+    # shrink, block, escalate... may never loosen a limit."
+    us_equity_beta:
+      members: [US.SPY, US.QQQ, US.IWM, US.XLF, US.XLE]
+      max_concurrent_positions: 2
+      rationale_source: docs/RESEARCH_CRISIS_AND_ALLOCATORS.md
+
+  # OPEN, NOT WIRED. The 2008 lesson is to use stressed correlations rather
+  # than measured calm ones. The static cap above is the blunt version of
+  # that. Measuring realised correlation per cycle and collapsing the cap to
+  # 1 when it rises would be the real implementation. Recorded as absent
+  # rather than described as present -- see AUDIT_FINDINGS.md for why that
+  # distinction is now explicit everywhere in this repo.
+  stress_conditional_cluster_cap:
+    implemented: false
+    intended_trigger: realised_correlation_above_0_8
+    intended_cap: 1
   instrument_rules:
     allow_options: false
     allow_shorting: false
@@ -362,6 +406,13 @@ execution:
   status_resting: 2
   status_cancelled: 5
   status_enum_is_documented: false
+
+  # How far through the book an exit is priced. MEASURED four times in
+  # Session 00: an aggressive limit fills at prevailing market, not at the
+  # limit, so pricing through costs nothing and buys certainty of execution.
+  # For a stop that certainty IS the control -- a stop that does not fill is
+  # not a stop. Read from here rather than defaulted in code.
+  exit_cross_offset_pct: 0.1
 
   software_stop_check_interval_seconds: 60
   # `text` accepts 100 bytes stored on the order. Stamp the decision's ledger hash so

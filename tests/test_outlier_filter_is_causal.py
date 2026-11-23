@@ -190,3 +190,70 @@ def test_reference_window_does_not_grow_without_bound():
 def test_empty_and_tiny_inputs_do_not_raise():
     assert flag_outlier_bars([]) == []
     assert flag_outlier_bars(_series(n=5)) == []
+
+
+# --------------------------------------------------------------------------
+# Lookahead: the defect the 2026-11-23 rehearsal exposed
+# --------------------------------------------------------------------------
+
+def test_bars_that_have_not_closed_are_never_used():
+    """The rehearsal ran at 15:30 and ingested bars through 15:55, reporting
+    staleness_seconds: -1500. That is indicators computed from data the cycle
+    could not have seen -- guaranteed in any backdated run and reachable live
+    through clock skew.
+
+    It also covers the partially-formed bar: a 5-minute bar read four minutes
+    in has a close that is still moving.
+    """
+    from engine.bars import validate
+
+    base = datetime(2026, 11, 20, 15, 0)
+    bars = [Bar(base + timedelta(minutes=5 * i), 100, 100.2, 99.8, 100, 1e6)
+            for i in range(12)]                      # 15:00 .. 15:55
+
+    audit = validate("US.SPY", bars, now_et=datetime(2026, 11, 20, 15, 30),
+                     max_staleness_seconds=99_999)
+
+    assert audit.newest_bar_et == "2026-11-20T15:25:00", (
+        "the 15:25 bar closes at 15:30; 15:30 onwards had not closed"
+    )
+    assert audit.dropped_not_yet_closed == 6
+    assert audit.staleness_seconds is not None and audit.staleness_seconds > 0, (
+        "negative staleness means the engine read the future"
+    )
+
+
+def test_staleness_is_never_negative_for_any_clock():
+    """The property, not the one case. No `now` should ever produce a bar set
+    whose newest member is in the future."""
+    from engine.bars import validate
+
+    from engine.errors import StaleDataError
+
+    base = datetime(2026, 11, 20, 9, 30)
+    bars = [Bar(base + timedelta(minutes=5 * i), 100, 100.2, 99.8, 100, 1e6)
+            for i in range(77)]
+
+    checked = refused = 0
+    for minutes in range(0, 390, 7):
+        now = base + timedelta(minutes=minutes)
+        try:
+            audit = validate("US.SPY", bars, now_et=now,
+                             max_staleness_seconds=99_999)
+        except StaleDataError:
+            # At 09:30 exactly, the 09:30 bar has not closed and nothing
+            # earlier exists. Refusing is the correct outcome, not a miss.
+            refused += 1
+            continue
+        if audit.staleness_seconds is not None:
+            assert audit.staleness_seconds >= 0, (
+                f"at {now:%H:%M} the newest bar was {audit.newest_bar_et}, "
+                f"which is in the future"
+            )
+            checked += 1
+
+    assert checked > 40, f"only {checked} clocks produced a usable bar set"
+    assert refused >= 1, (
+        "no clock refused; the all-unclosed case should be reachable at the "
+        "session open"
+    )

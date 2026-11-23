@@ -32,17 +32,31 @@ from typing import Any
 
 from .errors import ConfigError
 
-# The files whose presence makes a commit a plausible pin for a ledger written
-# by this engine. Listed explicitly: a glob would pass on an empty directory.
+# Every file that decides or records anything, plus the rules and the driver.
+# Listed explicitly rather than globbed: a glob passes on an empty directory,
+# and the whole point is to catch a commit that does not contain the engine.
+#
+# The first version of this tuple omitted errors.py, provenance.py and
+# run_cycle.py while the register claimed the check covered "every engine
+# file". A commit holding only the eight listed paths would have passed. The
+# list is now exhaustive, and `test_engine_files_covers_the_package` fails if
+# a new module is added to engine/ without being added here.
 ENGINE_FILES = (
     "engine/__init__.py",
-    "engine/config.py",
+    "engine/errors.py",
     "engine/ledger.py",
-    "engine/sizing.py",
-    "engine/risk_gate.py",
-    "engine/signal.py",
+    "engine/config.py",
     "engine/account.py",
+    "engine/provenance.py",
+    "engine/sizing.py",
+    "engine/signal.py",
+    "engine/bars.py",
+    "engine/session_state.py",
+    "engine/risk_gate.py",
+    "engine/executor.py",
+    "run_cycle.py",
     "config/risk_limits.yaml",
+    "docs/STRATEGY.md",
 )
 
 

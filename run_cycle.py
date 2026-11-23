@@ -1,45 +1,64 @@
 #!/usr/bin/env python3
-"""One decision cycle, offline. Reads bars from disk, writes decisions to the
-ledger, and prints the exact order JSON for a human to approve.
+"""One decision cycle. Decides and records; it cannot execute.
 
-It does NOT talk to moomoo. That separation is deliberate: the component that
-decides has no ability to execute, so a bug here cannot place an order. The
-agent with MCP access fetches bars, runs this, and submits only what a human
-approves.
+    python3 run_cycle.py \
+        --now-et "2026-11-23 10:35" \
+        --account-json acct.json \
+        --positions-json '{"US.SPY": 20}' \
+        --order-ids-json orders.json \
+        --quotes-json quotes.json \
+        --bars-dir analysis \
+        [--fills-json fills.json] \
+        [--require-clean-tree]
 
-    python3 run_cycle.py --bars-dir analysis --now-et "2026-11-20 11:05" \
-        --quote-age 5 --spread-pct 0.006 --equity 100000
+There is no network call anywhere in this file or in anything it imports from
+`engine/`. It reads bars and broker figures from disk, writes decisions to the
+ledger, and emits an intents file for something with credentials to submit.
+A defect here cannot reach the broker.
 
-Every path through this script writes at least one ledger record. A cycle that
-decided nothing is still a cycle that ran, and a log with gaps cannot show
-that the system was watching when it mattered.
+ORDER OF OPERATIONS, AND WHY
+
+    1. provenance        a cycle whose code cannot be identified writes no evidence
+    2. session plan      a closed day or a half day is resolved from config
+    3. fills ingested    yesterday's outcomes before today's decisions
+    4. bars validated    RTH only, interval checked, staleness refused
+    5. state rebuilt     from the ledger, cross-checked against the broker
+    6. snapshot written  equity, peak, drawdown -- every cycle
+    7. account guard     broker identity vs config, and foreign-order halt
+    8. EXITS             existing positions before new ones
+    9. entries           only if exits left room and every gate passed
+   10. intents written
+
+Exits precede entries deliberately. A cycle that opens a position while an
+existing one needs stopping out has its priorities backwards, and with
+software-only stops the open position is the one with no protection.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from engine import (  # noqa: E402
     AccountGuardError, Ledger, RiskConfig, RiskGate, RiskViolation,
-    SessionState, file_sha256, size_position, write_genesis,
-)
-from engine.provenance import describe_code  # noqa: E402
-from engine.account import (  # noqa: E402
-    account_state_from_api, describe_guard_inputs, ledger_order_ids,
+    StaleDataError, account_state_from_api, build_order, crossing_limit,
+    describe_code, describe_guard_inputs, file_sha256, ledger_order_ids,
+    plan_exits, plan_session, record_account_snapshot, record_exit,
+    record_fill, record_submission, reconstruct, size_position,
+    validate_bars, write_intents, write_genesis,
 )
 from engine.signal import (  # noqa: E402
     Bar, compute_indicators, evaluate_entry, regime_ok_from_spy,
 )
 
-# moomoo's kline payloads vary by endpoint, so accept the common spellings
-# rather than demanding one shape and failing on a field rename.
 _KEYS = {
     "ts": ("time_key", "time", "timestamp", "ts", "k_time", "datetime"),
     "open": ("open", "o", "open_price"),
@@ -58,22 +77,18 @@ def _pick(row: dict, field: str):
 
 
 def _parse_ts(value) -> datetime:
-    """Parse a bar timestamp as ET wall-clock.
+    """Bar timestamps are ET wall-clock.
 
-    The first version used utcfromtimestamp on `time_key` values that are
-    already ET, shifting every logged bar time by 5 hours: a 10:55 ET bar was
-    recorded as 15:55. The indicator maths was unaffected -- nothing in
-    signal.py filters on bar timestamps -- but every indicator timestamp in
-    the ledger was wrong, and a session-hours filter built on it later would
-    have silently discarded whole files.
+    An earlier version ran utcfromtimestamp on `time_key` values that were
+    already ET, shifting every logged bar time by five hours.
     """
+    from datetime import timedelta, timezone
     if isinstance(value, (int, float)):
         secs = value / 1000.0 if value > 1e11 else float(value)
-        # Epoch values are genuinely UTC; convert, then shift to ET. Fixed
-        # -5h because the competition window (17-28 Nov) is entirely EST --
-        # asserted here so a reused copy outside that window fails review
-        # rather than silently drifting by an hour.
-        return datetime.utcfromtimestamp(secs) - timedelta(hours=5)
+        # timezone-aware then stripped, rather than the deprecated
+        # utcfromtimestamp. EST is fixed across the competition window.
+        utc = datetime.fromtimestamp(secs, tz=timezone.utc).replace(tzinfo=None)
+        return utc - timedelta(hours=5)
     text = str(value).strip().replace("T", " ").replace("Z", "")
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
@@ -93,20 +108,32 @@ def load_bars(path: Path) -> list[Bar]:
         rows = next((v for v in rows.values() if isinstance(v, list)), None)
     if not isinstance(rows, list) or not rows:
         raise ValueError(f"{path.name}: could not find a list of bars")
-
     bars = [
-        Bar(
-            ts_et=_parse_ts(_pick(r, "ts")),
-            open=float(_pick(r, "open")),
-            high=float(_pick(r, "high")),
-            low=float(_pick(r, "low")),
-            close=float(_pick(r, "close")),
-            volume=float(_pick(r, "volume")),
-        )
+        Bar(ts_et=_parse_ts(_pick(r, "ts")), open=float(_pick(r, "open")),
+            high=float(_pick(r, "high")), low=float(_pick(r, "low")),
+            close=float(_pick(r, "close")), volume=float(_pick(r, "volume")))
         for r in rows
     ]
     bars.sort(key=lambda b: b.ts_et)
     return bars
+
+
+def _load_json(value: str, root: Path = ROOT):
+    p = root / value
+    if p.exists():
+        return json.loads(p.read_text(encoding="utf-8"))
+    return json.loads(value)
+
+
+def _newest_bar_file(bars_dir: Path, short: str) -> Path | None:
+    """Newest matching file, not the alphabetically first.
+
+    `sorted(glob)[0]` let a stale file win over today's, which combined with
+    unenforced RTH filtering meant stale bars could drive a live order.
+    """
+    hits = sorted(bars_dir.glob(f"*{short}*.json"),
+                  key=lambda p: p.stat().st_mtime, reverse=True)
+    return hits[0] if hits else None
 
 
 def main() -> int:
@@ -115,195 +142,259 @@ def main() -> int:
     ap.add_argument("--strategy", default="docs/STRATEGY.md")
     ap.add_argument("--bars-dir", default="analysis")
     ap.add_argument("--ledger", default="logs/decisions.jsonl")
-    ap.add_argument("--now-et", required=True, help='"YYYY-MM-DD HH:MM" in ET')
-    ap.add_argument("--quote-age", type=float, required=True)
-    ap.add_argument("--spread-pct", type=float, required=True)
-    # REQUIRED, and deliberately not defaulted. The earlier version built the
-    # account state from config and then asked the guard to check it against
-    # config, so the guard could never fail. These must carry what the broker
-    # returned.
-    ap.add_argument("--account-json", required=True,
-                    help="broker's sim_trade_cash_info + account identity, as "
-                         "JSON or a path to it. Must include acc_id, "
-                         "account_title, account_type, total_asset, balance, "
-                         "hold, market_value")
-    ap.add_argument("--positions-json", required=True,
-                    help='held quantities by symbol, e.g. \'{"US.SPY": 1}\'. '
-                         'Pass {} only when the position endpoint actually '
-                         'returned nothing')
-    ap.add_argument("--order-ids-json", required=True,
-                    help="every order id present in the account today, as a "
-                         "JSON list. Compared against the ledger to detect a "
-                         "second writer")
-    ap.add_argument("--entries-taken", type=int, default=0)
-    ap.add_argument("--orders-placed", type=int, default=0)
-    # Not operator-supplied. The first ledger's genesis pinned a commit that
-    # contained no engine, because this was a free-text argument defaulting to
-    # a string nobody checked. It is now derived and verified.
-    ap.add_argument("--require-clean-tree", action="store_true",
-                    help="refuse to run when engine files are modified but "
-                         "uncommitted. Set this for a live run: the commit "
-                         "hash verifies while describing different code")
+    ap.add_argument("--intents-out", default="outbox")
+    ap.add_argument("--now-et", required=True, help='"YYYY-MM-DD HH:MM" ET')
+    ap.add_argument("--account-json", required=True)
+    ap.add_argument("--positions-json", required=True)
+    ap.add_argument("--order-ids-json", required=True)
+    ap.add_argument("--quotes-json", required=True,
+                    help="per-symbol {bid, ask, book_age_seconds}")
+    ap.add_argument("--fills-json", default=None,
+                    help="fill reports to ingest before deciding")
+    ap.add_argument("--max-bar-age-minutes", type=float, default=30.0)
+    ap.add_argument("--require-clean-tree", action="store_true")
     args = ap.parse_args()
 
     cfg = RiskConfig.load(ROOT / args.config)
     gate = RiskGate(cfg)
     now_et = datetime.strptime(args.now_et, "%Y-%m-%d %H:%M")
-
-    def _load_json(value: str):
-        path = ROOT / value
-        if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
-        return json.loads(value)
-
-    api_account = _load_json(args.account_json)
-    positions = _load_json(args.positions_json)
-    account_order_ids = _load_json(args.order_ids_json)
-
-    # Establish provenance BEFORE anything else writes a record. A cycle whose
-    # code cannot be identified should not produce evidence at all.
     code = describe_code(ROOT, require_clean=args.require_clean_tree)
 
     led = Ledger(ROOT / args.ledger)
     if led.seq == 0:
-        genesis = write_genesis(
-            led,
-            config_hash=cfg.sha256,
-            strategy_hash=file_sha256(ROOT / args.strategy),
-            code_commit=code["code_commit"],
-            account={"acc_id": cfg.acc_id, "starting_equity_usd": cfg.starting_equity},
-        )
+        write_genesis(led, config_hash=cfg.sha256,
+                      strategy_hash=file_sha256(ROOT / args.strategy),
+                      code_commit=code["code_commit"],
+                      account={"acc_id": cfg.acc_id,
+                               "starting_equity_usd": cfg.starting_equity})
         led.append({"stage": "genesis_provenance", "verdict": "INIT",
-                    "reason_code": "CODE_VERIFIED",
+                    "reason_code": "CODE_VERIFIED", "provenance": code,
                     "reason_text": "commit derived from git and verified to "
-                                   "contain every engine file",
-                    "provenance": code})
-        print(f"ledger initialised at {args.ledger}")
-        print(f"  code  {code['code_commit_short']}  "
-              f"({code['commit_subject']})")
-        print(f"  rules {cfg.sha256[:12]}")
-        if code["engine_files_dirty"]:
-            print(f"  WARNING engine files modified on disk: "
-                  f"{code['engine_files_dirty']} -- the commit hash does not "
-                  f"describe the running code")
+                                   "contain every engine file"})
+        print(f"ledger initialised  code {code['code_commit_short']}  "
+              f"rules {cfg.sha256[:12]}")
+    if code["engine_files_dirty"]:
+        print(f"WARNING engine modified on disk: {code['engine_files_dirty']}")
 
     cycle_id = f"C{now_et:%Y%m%dT%H%M}"
+    plan = plan_session(cfg, now_et)
+    led.append({"cycle_id": cycle_id, "stage": "session_plan",
+                "verdict": "OBSERVED", "reason_code": "SESSION_RESOLVED",
+                "reason_text": plan.note or f"{plan.status} session",
+                "inputs": plan.to_ledger()})
+    print(f"\nSESSION {plan.trading_date} {plan.status}  "
+          f"entry {plan.earliest_entry_et:%H:%M}-{plan.latest_entry_et:%H:%M}  "
+          f"flat by {plan.flat_by_et:%H:%M}")
 
-    # Orders the ledger knows, plus our own pre-ledger probe orders declared in
-    # config. Everything else in the account is someone else's.
+    if not plan.is_trading_day:
+        led.append({"cycle_id": cycle_id, "stage": "cycle", "verdict": "HALT",
+                    "reason_code": "NOT_A_TRADING_DAY",
+                    "reason_text": f"{plan.trading_date} is {plan.status}: "
+                                   f"{plan.note}"})
+        print(f"HALT  {plan.trading_date} is {plan.status}. {plan.note}")
+        return 0
+
+    # ---- 3. fills first: yesterday's outcomes before today's decisions ----
+    if args.fills_json:
+        for f in _load_json(args.fills_json):
+            record_fill(led, cycle_id=cycle_id, order_id=str(f["order_id"]),
+                        symbol=f["symbol"], side=f["side"],
+                        verdict=f.get("verdict", "FILLED"),
+                        filled_qty=int(f.get("filled_qty", 0)),
+                        avg_fill_price=float(f.get("avg_fill_price", 0)),
+                        fill_time_et=f.get("fill_time_et", now_et.isoformat()),
+                        limit_price=f.get("limit_price"),
+                        cash_before=f.get("cash_before"),
+                        cash_after=f.get("cash_after"),
+                        submitted_at_et=f.get("submitted_at_et"))
+        print(f"ingested {len(_load_json(args.fills_json))} fill report(s)")
+
+    # ---- 4. bars ----
+    quotes = _load_json(args.quotes_json)
+    bars_dir = ROOT / args.bars_dir
+    indicators: dict[str, Any] = {}
+    audits: dict[str, Any] = {}
+    raw_bars: dict[str, list[Bar]] = {}
+
+    for sym in cfg.symbols:
+        path = _newest_bar_file(bars_dir, sym.split(".")[-1])
+        if path is None:
+            print(f"  {sym}: no bar file -- skipped")
+            continue
+        try:
+            audit = validate_bars(
+                sym, load_bars(path), now_et=now_et,
+                max_staleness_seconds=args.max_bar_age_minutes * 60,
+            )
+        except (StaleDataError, ValueError) as exc:
+            led.append({"cycle_id": cycle_id, "stage": "data_quality",
+                        "symbol": sym, "verdict": "BLOCK",
+                        "reason_code": "STALE_OR_INVALID_BARS",
+                        "reason_text": str(exc), "source_file": path.name})
+            print(f"  {sym}: {exc}")   # bars.py no longer repeats the symbol
+            continue
+        audits[sym], raw_bars[sym] = audit, list(audit.kept)
+
+    led.append({"cycle_id": cycle_id, "stage": "data_quality",
+                "verdict": "OBSERVED", "reason_code": "BARS_VALIDATED",
+                "reason_text": "RTH filter, interval check and staleness gate",
+                "inputs": {s: a.to_ledger() for s, a in audits.items()}})
+
+    for sym, bars in raw_bars.items():
+        try:
+            indicators[sym] = compute_indicators(sym, bars)
+        except ValueError as exc:
+            led.append({"cycle_id": cycle_id, "stage": "indicators",
+                        "symbol": sym, "verdict": "BLOCK",
+                        "reason_code": "INSUFFICIENT_DATA",
+                        "reason_text": str(exc)})
+            print(f"  {sym}: INSUFFICIENT_DATA: {exc}")
+
+    # ---- 5. state, cross-checked ----
+    api_account = _load_json(args.account_json)
+    broker_positions = _load_json(args.positions_json)
+    account_order_ids = _load_json(args.order_ids_json)
+
     known_own = set(ledger_order_ids(led.records()))
     known_own |= {str(o) for o in
                   (cfg.section("account_integrity").get("known_own_order_ids") or [])}
+    acct = account_state_from_api(api_account, positions=broker_positions,
+                                  account_order_ids=account_order_ids,
+                                  ledger_order_ids=known_own)
 
-    acct = account_state_from_api(
-        api_account,
-        positions=positions,
-        account_order_ids=account_order_ids,
-        ledger_order_ids=known_own,
-    )
-    equity = acct.total_asset
+    halted = os.environ.get(str(cfg.section("kill_switch")["manual_halt_env_var"]),
+                            "").lower() == "halt"
+    live = reconstruct(led.records(), cfg, now_et=now_et,
+                       broker_equity=acct.total_asset,
+                       broker_positions=broker_positions,
+                       halted=halted,
+                       halt_reason="AGENT_MODE=halt" if halted else "")
 
-    # Both guards, and the comparison itself recorded. Logging only "passed"
-    # would leave no way to distinguish a real check from a vacuous one.
+    record_account_snapshot(led, cycle_id=cycle_id, live_state=live)
+    sess = live.session_state
+    print(f"EQUITY ${live.equity:,.2f}  peak ${live.peak_equity:,.2f}  "
+          f"dd {sess.peak_drawdown_pct:.3f}%  session {sess.session_pnl_pct:+.3f}%")
+    print(f"STATE  positions {live.open_quantities() or 'flat'}  "
+          f"entries today {sess.entries_this_session}  "
+          f"losses in a row {sess.consecutive_losses}  "
+          f"cycle gap {sess.seconds_since_last_completed_cycle:.0f}s")
+    for w in live.warnings:
+        print(f"  WARNING {w}")
+
+    # ---- 7. guards ----
     guard_inputs = describe_guard_inputs(acct, cfg)
     try:
         gate.assert_account(acct)
         gate.assert_no_foreign_activity(acct)
     except (AccountGuardError, RiskViolation) as exc:
-        # A guard failure is a decision, so it is logged with the same detail
-        # as an execution before the process exits.
         led.append({"cycle_id": cycle_id, "stage": "account_guard",
                     "verdict": "HALT",
                     "reason_code": getattr(exc, "reason_code", "ACCOUNT_GUARD_FAIL"),
                     "reason_text": str(exc), "inputs": guard_inputs})
+        led.append({"cycle_id": cycle_id, "stage": "cycle", "verdict": "HALT",
+                    "reason_code": getattr(exc, "reason_code", "ACCOUNT_GUARD_FAIL"),
+                    "reason_text": "cycle halted at the account guard"})
         print(f"\nHALT -- account guard: {exc}")
-        print(f"\nledger: {led.seq} records, tip={led.tip[:16]}...")
         return 2
-
     led.append({"cycle_id": cycle_id, "stage": "account_guard",
                 "verdict": "APPROVE", "reason_code": "ACCOUNT_VERIFIED",
-                "reason_text": "broker-reported identity matched config on "
-                               "id, title and type; snapshot reconciles",
-                "inputs": guard_inputs})
-    print(f"\nACCOUNT {acct.acc_id} verified against broker response "
-          f"| equity ${acct.total_asset:,.2f} | positions "
-          f"{acct.open_positions or 'flat'}")
+                "reason_text": "broker identity matched config on id, title "
+                               "and type; snapshot reconciles",
+                "inputs": guard_inputs, "rules_hash": cfg.sha256,
+                "code_commit": code["code_commit"],
+                "engine_files_dirty": code["engine_files_dirty"]})
 
-    sess = SessionState(
-        now_et=now_et,
-        entries_this_session=args.entries_taken,
-        orders_this_session=args.orders_placed,
-        seconds_since_last_entry=None,
-        seconds_since_last_completed_cycle=0.0,
-        session_pnl_pct=0.0,
-        peak_drawdown_pct=0.0,
-        consecutive_losses=0,
-    )
+    orders: list[dict[str, Any]] = []
 
-    bars_dir = ROOT / args.bars_dir
-    loaded: dict[str, list[Bar]] = {}
-    for sym in cfg.symbols:
-        short = sym.split(".")[-1]
-        hits = sorted(bars_dir.glob(f"*{short}*.json"))
-        if not hits:
-            print(f"  {sym}: no bar file matching *{short}*.json -- skipped")
+    # ---- 8. EXITS, before any entry ----
+    exit_intents, exit_verdicts = plan_exits(
+        live.positions, indicators, cfg, now_et=now_et, plan=plan)
+    for v in exit_verdicts:
+        led.append({"cycle_id": cycle_id, "stage": "exit_check",
+                    "symbol": v.symbol,
+                    "verdict": "EXIT_SIGNAL" if v.qualifies else "HOLD",
+                    "reason_code": v.reason_code, "reason_text": v.reason_text,
+                    "detail": v.detail})
+
+    for intent in exit_intents:
+        q = quotes.get(intent.symbol, {})
+        bid, ask = float(q.get("bid") or 0), float(q.get("ask") or 0)
+        if bid <= 0 or ask <= 0:
+            led.append({"cycle_id": cycle_id, "stage": "exit_check",
+                        "symbol": intent.symbol, "verdict": "ESCALATE",
+                        "reason_code": "NO_QUOTE_FOR_EXIT",
+                        "reason_text": "an exit is required and there is no "
+                                       "quote to price it; needs a human"})
+            print(f"  ESCALATE {intent.symbol}: exit required, no quote")
             continue
-        try:
-            loaded[sym] = load_bars(hits[0])
-        except Exception as exc:
-            print(f"  {sym}: {hits[0].name} unreadable: {exc}")
+        price = crossing_limit(cfg, side="SELL", bid=bid, ask=ask,
+                               urgency=intent.urgency)
+        order = build_order(cfg, symbol=intent.symbol, side="SELL",
+                            qty=intent.qty, limit_price=price,
+                            cycle_id=cycle_id, ledger_tip=led.tip)
+        record_submission(led, cycle_id=cycle_id, order=order, intent="EXIT",
+                          approved_qty=intent.qty, exit_intent=intent)
+        orders.append(order)
+        print(f"  EXIT {intent.symbol} {intent.qty} @ {price:.2f} "
+              f"[{intent.exit_rule}, {intent.urgency}]")
 
-    if "US.SPY" not in loaded:
-        led.append({"cycle_id": cycle_id, "stage": "regime", "verdict": "HALT",
+    # ---- 9. entries ----
+    held_after_exits = dict(live.open_quantities())
+    for intent in exit_intents:
+        held_after_exits.pop(intent.symbol, None)
+
+    if "US.SPY" not in indicators:
+        led.append({"cycle_id": cycle_id, "stage": "regime", "verdict": "BLOCK",
                     "reason_code": "NO_SPY_DATA",
-                    "reason_text": "regime filter needs SPY bars; none loaded"})
-        print("HALT: regime filter requires SPY bars")
-        return 1
+                    "reason_text": "the regime filter needs SPY bars"})
+        print("\nno SPY data: entries blocked")
+        regime_ok = False
+    else:
+        regime_ok, regime_detail = regime_ok_from_spy(raw_bars["US.SPY"])
+        led.append({"cycle_id": cycle_id, "stage": "regime",
+                    "verdict": "REGIME_OK" if regime_ok else "REGIME_BLOCK",
+                    "reason_code": "REGIME", "inputs": regime_detail})
+        print(f"\nREGIME SPY {regime_detail['spy_close']} vs SMA60 "
+              f"{regime_detail['spy_sma60']:.4f} -> "
+              f"{'OK' if regime_ok else 'BLOCKED'}")
 
-    regime_ok, regime_detail = regime_ok_from_spy(loaded["US.SPY"])
-    led.append({"cycle_id": cycle_id, "stage": "regime",
-                "verdict": "REGIME_OK" if regime_ok else "REGIME_BLOCK",
-                "reason_code": "REGIME", "inputs": regime_detail})
-    print(f"\nREGIME  SPY {regime_detail['spy_close']} vs SMA60 "
-          f"{regime_detail['spy_sma60']:.4f} -> "
-          f"{'OK' if regime_ok else 'BLOCKED (downtrend)'}")
+    from dataclasses import replace as _replace
+    acct_for_entries = _replace(acct, open_positions=held_after_exits)
 
     print(f"\n{'sym':9s}{'close':>10s}{'sma20':>11s}{'atr20':>9s}"
           f"{'threshold':>11s}  verdict")
-    approved = []
-
-    for sym, bars in loaded.items():
-        try:
-            ind = compute_indicators(sym, bars)
-        except ValueError as exc:
-            led.append({"cycle_id": cycle_id, "stage": "indicators", "symbol": sym,
-                        "verdict": "BLOCK", "reason_code": "INSUFFICIENT_DATA",
-                        "reason_text": str(exc)})
-            print(f"{sym:9s}{'--':>10s}  INSUFFICIENT_DATA: {exc}")
-            continue
+    for sym, ind in indicators.items():
+        q = quotes.get(sym, {})
+        age = float(q.get("book_age_seconds", 1e9))
+        mid = (float(q.get("bid") or 0) + float(q.get("ask") or 0)) / 2
+        spread_pct = (
+            (float(q["ask"]) - float(q["bid"])) / mid * 100.0
+            if mid > 0 and q.get("ask") and q.get("bid") else 1e9
+        )
 
         sig = evaluate_entry(
-            ind, regime_ok=regime_ok, quote_age_seconds=args.quote_age,
-            spread_pct_of_mid=args.spread_pct, now_et=now_et,
+            ind, regime_ok=regime_ok, quote_age_seconds=age,
+            spread_pct_of_mid=spread_pct, now_et=now_et,
             max_quote_age_seconds=float(cfg.section("data_quality")["max_quote_age_seconds"]),
             max_spread_pct_of_mid=float(cfg.section("data_quality")["max_spread_pct_of_mid"]),
+            entry_window=(plan.earliest_entry_et, plan.latest_entry_et),
         )
         led.append({"cycle_id": cycle_id, "stage": "signal", "symbol": sym,
                     "verdict": "PROPOSE" if sig.qualifies else "NO_SETUP",
-                    "reason_code": sig.reason_code, "reason_text": sig.reason_text,
-                    "inputs": ind.to_ledger(), "conditions": sig.conditions,
-                    "detail": sig.detail})
+                    "reason_code": sig.reason_code,
+                    "reason_text": sig.reason_text, "inputs": ind.to_ledger(),
+                    "conditions": sig.conditions, "detail": sig.detail})
 
         row = (f"{sym:9s}{ind.close:10.4f}{ind.sma20:11.4f}{ind.atr20:9.4f}"
                f"{sig.detail['entry_threshold']:11.4f}  ")
         if not sig.qualifies:
-            failed = [k for k, v in sig.conditions.items() if not v]
-            print(row + "no setup (" + ", ".join(failed) + ")")
+            print(row + "no setup (" +
+                  ", ".join(k for k, v in sig.conditions.items() if not v) + ")")
             continue
 
         try:
             proposal = size_position(cfg, symbol=sym, price=ind.close,
-                                     atr20=ind.atr20, equity=equity)
+                                     atr20=ind.atr20, equity=live.equity)
         except RiskViolation as exc:
             led.append({"cycle_id": cycle_id, "stage": "sizing", "symbol": sym,
                         "verdict": "BLOCK", "reason_code": exc.reason_code,
@@ -311,47 +402,52 @@ def main() -> int:
             print(row + f"BLOCK {exc.reason_code}")
             continue
 
-        decision = gate.evaluate_entry(
-            proposal, acct=acct, sess=sess,
-            quote_age_seconds=args.quote_age, spread_pct_of_mid=args.spread_pct,
-        )
+        decision = gate.evaluate_entry(proposal, acct=acct_for_entries,
+                                       sess=sess, quote_age_seconds=age,
+                                       spread_pct_of_mid=spread_pct)
         led.append({"cycle_id": cycle_id, "stage": "risk", "symbol": sym,
-                    "verdict": decision.verdict, "reason_code": decision.reason_code,
+                    "verdict": decision.verdict,
+                    "reason_code": decision.reason_code,
                     "reason_text": decision.reason_text,
                     "proposed": proposal.to_ledger(),
                     "risk_checks": decision.to_ledger()})
-
         if decision.verdict == "BLOCK":
             print(row + f"BLOCK {decision.reason_code}")
             continue
 
-        print(row + f"{decision.verdict} qty {decision.qty_out} "
-                    f"(${proposal.price * decision.qty_out:,.0f})")
-        approved.append((sym, ind, proposal, decision))
+        price = crossing_limit(cfg, side="BUY", bid=float(q["bid"]),
+                               ask=float(q["ask"]), urgency="normal")
+        order = build_order(cfg, symbol=sym, side="BUY",
+                            qty=decision.qty_out, limit_price=price,
+                            cycle_id=cycle_id, ledger_tip=led.tip)
+        record_submission(led, cycle_id=cycle_id, order=order, intent="ENTRY",
+                          approved_qty=decision.qty_out,
+                          proposal=proposal.to_ledger())
+        orders.append(order)
+        held_after_exits[sym] = decision.qty_out
+        acct_for_entries = _replace(acct, open_positions=held_after_exits)
+        print(row + f"{decision.verdict} qty {decision.qty_out} @ {price:.2f}")
 
-    print()
-    if not approved:
-        print("No qualifying setup this cycle. Nothing to submit.")
-        led.append({"cycle_id": cycle_id, "stage": "cycle", "verdict": "NO_ACTION",
-                    "reason_code": "NO_SETUP",
-                    "reason_text": "cycle complete; no symbol qualified"})
+    # ---- 10. intents ----
+    led.append({"cycle_id": cycle_id, "stage": "cycle",
+                "verdict": "ORDERS_PENDING" if orders else "NO_ACTION",
+                "reason_code": "CYCLE_COMPLETE",
+                "reason_text": f"{len(orders)} order(s) awaiting submission"
+                               if orders else "cycle complete; no action"})
+
+    if orders:
+        out_dir = Path(args.intents_out)
+        if not out_dir.is_absolute():
+            out_dir = ROOT / out_dir
+        p = write_intents(out_dir / f"intents_{cycle_id}.json", cycle_id, orders)
+        try:
+            shown = p.relative_to(ROOT)
+        except ValueError:
+            shown = p
+        print(f"\n{len(orders)} order(s) written to {shown}")
+        print("SUBMIT ONLY AFTER HUMAN APPROVAL. This process cannot submit.")
     else:
-        print("ORDERS FOR APPROVAL -- submit only after a human says yes:\n")
-        for sym, ind, proposal, decision in approved:
-            tip = led.tip[:16]
-            order = {
-                "acc_id": cfg.acc_id, "market": cfg.raw["account"]["market_id"],
-                "symbol": sym, "order_type": int(cfg.section("execution")["order_type"]),
-                "order_side": 1, "qty": str(decision.qty_out),
-                "price": f"{ind.close:.2f}",
-                "order_trade_time_type": int(cfg.section("execution")["order_trade_time_type"]),
-                "text": f"S01-{cycle_id}-{tip[:8]}",
-            }
-            print(json.dumps(order, indent=2))
-            print(f"  stop {ind.close - proposal.sizing_distance_usd / 1.5:.4f} "
-                  f"| target {ind.sma20:.4f} "
-                  f"| risk ${proposal.risk_at_stop_usd:.2f} "
-                  f"({proposal.risk_pct_of_equity:.3f}%)\n")
+        print("\nNo action this cycle.")
 
     report = led.verify_report()
     print(f"ledger: {report['records']} records, intact={report['intact']}, "

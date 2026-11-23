@@ -104,3 +104,23 @@ def test_the_record_states_what_the_pin_does_and_does_not_establish(tmp_path):
     repo = _repo(tmp_path, files=ENGINE_FILES)
     info = describe_code(repo)
     assert info["pin_establishes"].startswith("the listed files exist at this commit")
+
+
+def test_engine_files_covers_every_module_in_the_package():
+    """ENGINE_FILES must mean what the register says it means.
+
+    Its first version omitted errors.py, provenance.py and run_cycle.py while
+    the audit register claimed the check covered "every engine file" -- so a
+    commit holding only the listed paths would have passed. This test fails
+    when a module is added to engine/ and not added here, which is the only
+    way the claim stays true as the package grows.
+    """
+    pkg = Path(__file__).resolve().parents[1] / "engine"
+    on_disk = {f"engine/{p.name}" for p in pkg.glob("*.py")}
+    listed = set(ENGINE_FILES)
+    missing = sorted(on_disk - listed)
+    assert not missing, (
+        f"engine modules absent from ENGINE_FILES: {missing}. A commit "
+        f"without them would pass the provenance check while the register "
+        f"claims every engine file is verified."
+    )

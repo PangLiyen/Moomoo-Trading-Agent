@@ -369,10 +369,22 @@ def evaluate_exit(
     session_flat_by: time = time(15, 50),
     holiday_flat_by: time | None = None,
 ) -> SignalVerdict:
-    """Target, stop, time stop, session stop. Checked in that order of
-    severity: the stop and the session deadline are not negotiable, the target
-    is the good outcome, and the time stop exists because with software-only
-    stops an aging position is an accumulating unmonitored risk."""
+    """Evaluate the five exits, in this order of precedence:
+
+        1. SESSION_STOP  the flat-by deadline; never negotiable
+        2. STOP_HIT      price at or below the stop level
+        3. TARGET_HIT    price back at SMA20
+        4. TIME_STOP     held longer than max_holding_minutes
+
+    The order is the tie-break, and it matters: a bar that is simultaneously
+    past the deadline and below the stop is labelled SESSION_STOP, because the
+    deadline is the reason we are leaving regardless of price.
+
+    An earlier version of this docstring claimed "target, stop, time stop,
+    session stop", which is neither the code's order nor the intended one.
+    The label is what the ledger records and what P7 would be measured from,
+    so a wrong order here is a wrong exit attribution later.
+    """
     stop_level = pos.entry_price - stop_atr_mult * pos.entry_atr20
     held_minutes = (now_et - pos.entry_time_et).total_seconds() / 60.0
     flat_by = holiday_flat_by or session_flat_by

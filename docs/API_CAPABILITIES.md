@@ -382,6 +382,27 @@ A single bad print silently raises ATR20 for the next 100 minutes, which widens 
 shrinks position size, and loosens the cost gate — all in the direction of taking worse
 trades while reporting a healthy risk profile.
 
+### Order book venue shape is not stable — dated correction
+
+Session 00 (20 Nov, market open) measured `quote_order_book` returning a
+**NASDAQ + ARCA pair**, and §4 above was written from that.
+
+| When | Shape |
+|---|---|
+| Fri 20 Nov, market open | NASDAQ + ARCA |
+| Sun 22 Nov, market closed | **single consolidated `"US"` book** |
+| Mon 23 Nov 09:40 ET, market open | NASDAQ + ARCA again |
+
+So the consolidated book appears to be weekend or closed-market behaviour
+rather than an entitlement change. The practical consequence: code that takes
+a cross-venue best must not assume two venues are present. The quotes builder
+handles both — best bid is the max across whatever venues are returned, best
+ask the min, and `book_age_seconds` comes from the freshest venue's
+`exchange_data_time_ms`.
+
+Measured live at 09:40 ET on 23 Nov: book ages 17.8–25.9 s, well inside the
+120 s gate.
+
 ### Feed quirks
 
 - `end` is ignored; results truncate at `num` bars forward from `start`

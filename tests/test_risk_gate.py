@@ -419,3 +419,35 @@ def test_the_gap_is_recorded_whether_or_not_it_blocks(gate, cfg, clean_account, 
     d = _ok(gate, _spy(cfg), clean_account, open_session)
     assert "cycle_gap_seconds" in d.check_detail
     assert "cycle_gap_limit_seconds" in d.check_detail
+
+
+def test_the_cycle_gap_scope_is_read_from_config_not_hardcoded(gate, cfg,
+                                                               clean_account,
+                                                               open_session):
+    """`cycle_gap_blocks_only_while_holding` must control the behaviour it
+    describes.
+
+    Its first version was dead config: the gate hardcoded `and holding` and
+    never read the key. That is the N4 pattern, written four messages after N4
+    was documented in the audit register. Flipping the key must change the
+    verdict, or the key is decoration.
+    """
+    import copy
+    from dataclasses import replace
+    from engine.config import RiskConfig
+    from engine.risk_gate import RiskGate
+
+    sess = replace(open_session, seconds_since_last_completed_cycle=900.0)
+
+    # As configured: a flat book is not blocked.
+    assert _ok(gate, _spy(cfg), clean_account, sess).verdict == "APPROVE"
+
+    # Flipped: elapsed time alone blocks, holding or not.
+    raw = copy.deepcopy(cfg.raw)
+    raw["kill_switch"]["cycle_gap_blocks_only_while_holding"] = False
+    strict = RiskGate(RiskConfig(raw, path=cfg.path, sha256=cfg.sha256))
+    d = strict.evaluate_entry(_spy(cfg), acct=clean_account, sess=sess,
+                              quote_age_seconds=4.0, spread_pct_of_mid=0.0056)
+    assert d.reason_code == "CYCLE_GAP_EXCEEDED", (
+        "the config key does not control the behaviour it names"
+    )

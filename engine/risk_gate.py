@@ -222,7 +222,13 @@ class RiskGate:
         max_gap = ks.get("max_cycle_gap_seconds")
         gap = sess.seconds_since_last_completed_cycle
         holding = any(q != 0 for q in acct.open_positions.values())
-        if max_gap and gap > float(max_gap) and holding:
+        # Read from config, not hardcoded. The first version of this scoping
+        # asserted the policy in a config key and then ignored it, which is
+        # the N4 pattern -- dead config describing behaviour it does not
+        # control -- written four messages after N4 was documented.
+        only_while_holding = bool(ks.get("cycle_gap_blocks_only_while_holding", True))
+        gap_blocks = holding or not only_while_holding
+        if max_gap and gap > float(max_gap) and gap_blocks:
             return block(
                 "CYCLE_GAP_EXCEEDED",
                 f"{gap:.0f}s since the last completed cycle exceeds "
@@ -233,6 +239,7 @@ class RiskGate:
         detail["cycle_gap_seconds"] = gap
         detail["cycle_gap_limit_seconds"] = float(max_gap) if max_gap else None
         detail["holding_during_gap"] = holding
+        detail["cycle_gap_blocks_only_while_holding"] = only_while_holding
         passed.append("cycle_cadence_ok")
 
         # --- data quality: refuse to act on data we cannot date ---

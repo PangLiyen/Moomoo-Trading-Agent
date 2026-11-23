@@ -163,3 +163,12 @@ handful of price moves than to 37.
 
 Nothing was promoted, and nothing in `config/` or `engine/` changed. TEST
 remains untouched by this addendum.
+
+**Checked against N33, 2026-11-24.** The live bar filter was refusing the
+newest final bar (one-bar lag, `docs/AUDIT_FINDINGS.md` N33). This analysis
+never had that lag: it does not call `engine.bars.validate`, and it times each
+signal at its own bar's close label and enters at that close. Re-run on the
+corrected code the funnel is unchanged — 614 dislocated, 182 ticked (29.6%),
+57 through regime and the ATR floor, 35 removed by tick-up (61.4%), 22 pass —
+so the TRAIN result above stands as computed. The lag applies to the live
+observe-only cycles of 2026-11-23, not to this measurement.

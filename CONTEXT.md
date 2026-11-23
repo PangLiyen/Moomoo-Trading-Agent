@@ -103,7 +103,7 @@ docs/SESSION_00_PROBE.md       the capability-probe runbook
 docs/COMPETITION_BRIEF.md      scoring, field, timeline, team structure
 analysis/                      5-min bar data + compute_indicators.py
 engine/                        deterministic core (see below)
-tests/                         307 tests; the evidence for the claim
+tests/                         308 tests; the evidence for the claim
 ```
 
 `engine/`, strictest layer first. Nothing lower imports anything higher.
@@ -121,7 +121,7 @@ model. That is what makes the limits enforceable rather than advisory.
 
 ## 6. What the tests are for
 
-`python3 -m pytest tests/ -q` → 307 passing.
+`python3 -m pytest tests/ -q` → 308 passing.
 
 They are not regression cover. They are the evidence for the submission's
 central claim, so each one names a rule and demonstrates enforcement. Two

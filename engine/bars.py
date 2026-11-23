@@ -29,10 +29,14 @@ from .errors import StaleDataError
 from .signal import Bar
 
 # US equity regular trading hours, Eastern. A 5-minute bar is labelled by its
-# START, so the last regular bar of a normal session starts at 15:55 and the
-# 16:00 print is a closing auction artefact rather than a tradeable bar.
-RTH_FIRST_BAR_START = time(9, 30)
-RTH_LAST_BAR_START = time(15, 55)
+# CLOSE: the bar labelled T carries the minutes (T-5, T] and is final at T.
+# Measured on 2026-11-23 -- the 11:35 bar held exactly the 1-minute bars
+# 11:31..11:35 summed to the share, and was identical when fetched at 11:35:02
+# and 11:36:22. The session shape agrees: a normal day is 77 bars labelled
+# 09:35..15:55, with no 09:30 bar (that window is pre-market) and no 16:00
+# bar in the feed; a 16:00 label, if one ever appears, is the closing auction.
+RTH_FIRST_BAR_CLOSE = time(9, 35)
+RTH_LAST_BAR_CLOSE = time(15, 55)
 EXPECTED_INTERVAL = timedelta(minutes=5)
 
 
@@ -67,16 +71,16 @@ class BarAudit:
 
 
 def in_rth(ts: datetime) -> bool:
-    """A bar start inside regular hours, Monday to Friday.
+    """A bar close inside regular hours, Monday to Friday.
 
-    The 16:00 closing print is excluded: it is labelled at the session close,
-    carries auction volume, and is not a five-minute trading interval. Every
-    committed analysis script drops it, so the live path must too or the two
-    disagree about what a session contains.
+    The label is the bar's close, so the admitted labels are the ends of the
+    session's five-minute intervals: 09:35 (the 09:30..09:35 bar) through
+    15:55 (the 15:50..15:55 bar). A 09:30 label would be the pre-market
+    interval and a 16:00 label the closing auction; neither is regular RTH.
     """
     if ts.weekday() > 4:
         return False
-    return RTH_FIRST_BAR_START <= ts.time() <= RTH_LAST_BAR_START
+    return RTH_FIRST_BAR_CLOSE <= ts.time() <= RTH_LAST_BAR_CLOSE
 
 
 def validate(
@@ -143,22 +147,25 @@ def validate(
 
     violations = _interval_violations(deduped)
     sessions = sorted({b.ts_et.date().isoformat() for b in deduped})
-    # A bar is usable only once it has CLOSED. Two distinct faults are
-    # excluded here, and the second is the one that bit:
+    # A bar is usable once its interval has ENDED, which for a close label is
+    # the label itself: the bar labelled T is final at T. So `label > now_et`
+    # is a bar still forming; `label <= now_et` is complete.
     #
-    #   - a bar starting after `now_et` cannot have happened yet
-    #   - a bar that has started but not finished has a close that is still
-    #     moving, so reading it is reading a number that will change
+    # The first version of this cutoff (689e5c5) wrote `label + interval <=
+    # now_et`, reading the label as a START. That fixed the lookahead it was
+    # written for -- a 15:30 run ingesting bars through 15:55 and reporting
+    # staleness_seconds: -1500 -- but it also refused the newest final bar on
+    # every cycle: at 10:52 it admitted 10:45 and refused 10:50, which had
+    # been final for two minutes (N33). Its regression test asserted that same
+    # reading, so the suite agreed with the bug.
     #
-    # The first version only rejected POSITIVE staleness, so a rehearsal at
-    # 15:30 happily ingested bars through 15:55 and reported
-    # staleness_seconds: -1500. That is lookahead: indicators computed from
-    # data the cycle could not have seen. It is guaranteed in any backdated
-    # run and reachable live through clock skew, and it is the one category
-    # of defect that invalidates a result rather than degrading it.
+    # Lookahead is still excluded: a label after `now_et` is an interval that
+    # has not ended, whoever wrote the file. Whether a final bar has reached
+    # the feed yet is not this function's question -- it cannot be in the
+    # input before the feed published it.
     unclosed = 0
     if now_et is not None:
-        closed = [b for b in deduped if b.ts_et + expected_interval <= now_et]
+        closed = [b for b in deduped if b.ts_et <= now_et]
         unclosed = len(deduped) - len(closed)
         deduped = closed
 
@@ -177,9 +184,9 @@ def validate(
             )
     elif now_et is not None and unclosed:
         raise StaleDataError(
-            f"every bar supplied starts at or after {now_et:%Y-%m-%d %H:%M} "
-            f"ET, so none has closed. Computing indicators from them would "
-            f"be reading data the cycle cannot have seen."
+            f"every bar supplied closes after {now_et:%Y-%m-%d %H:%M} ET, "
+            f"so none has closed. Computing indicators from them would be "
+            f"reading data the cycle cannot have seen."
         )
 
     return BarAudit(

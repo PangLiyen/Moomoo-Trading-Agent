@@ -54,7 +54,7 @@ def repo(tmp_path_factory) -> Path:
 
 
 def _bars(repo: Path, *, spy_above_sma60: bool = True,
-          last_day: int = 23, last_bar: str = "10:30") -> Path:
+          last_day: int = 23, last_bar: str = "10:35") -> Path:
     """Four sessions of RTH 5-minute bars for all five symbols."""
     import random
     rng = random.Random(11)
@@ -66,9 +66,11 @@ def _bars(repo: Path, *, spy_above_sma60: bool = True,
     for sym, (px, atr) in specs.items():
         bars = []
         for day in (18, 19, 20, last_day):
-            n = (((hh - 9) * 60 + mm - 30) // 5 + 1) if day == last_day else 77
+            # Bars are labelled by their close (N33): a session runs 09:35
+            # (09:30..09:35) to 15:55, 77 bars.
+            n = (((hh * 60 + mm) - (9 * 60 + 35)) // 5 + 1) if day == last_day else 77
             for i in range(n):
-                ts = datetime(2026, 11, day, 9, 30) + timedelta(minutes=5 * i)
+                ts = datetime(2026, 11, day, 9, 35) + timedelta(minutes=5 * i)
                 c = px + rng.uniform(-atr, atr)
                 half = atr / 2 * rng.uniform(0.7, 1.3)
                 bars.append({"time_key": ts.strftime("%Y-%m-%d %H:%M:%S"),

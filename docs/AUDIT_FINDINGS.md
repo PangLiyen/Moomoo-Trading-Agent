@@ -243,4 +243,14 @@ N28 and N30 remain open, unchanged.
 
 With N32 the register stands at **34** numbered findings.
 
+---
+
+## N33 — the bar filter refused the newest final bar, 2026-11-24
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| N33 | **High** | `engine/bars.py` admitted a bar only when `ts_et + 5min <= now_et`, reading the timestamp as the bar's **start**. The labels are **close** labels: the bar labelled T carries (T−5, T] and is final at T — measured 2026-11-23 with 1-minute data (the 5-minute 11:35 bar was byte-identical at 11:35:02 and 11:36:22, and its volume 702,408 equals the sum of the 1-minute bars 11:31–11:35), and confirmed by the session shape (77 bars labelled 09:35…15:55, no 09:30 bar, no 16:00 bar in the feed). So on **every** live cycle the newest final bar was refused: at 10:52 the filter admitted 10:45 and dropped 10:50, which had been final for two minutes. Every indicator — SMA20, ATR20, the regime SMA60, D_ATR — was computed one bar behind the decision, and the entry rule was evaluated against a bar seven minutes old when it should have been two. This is the mirror image of the lookahead defect fixed in `689e5c5`: that one admitted bars that had not closed (negative staleness, N32 family), this one refused bars that had. Its regression test, written in the same commit as the lookahead fix, asserted the same reading — it required `label + 5min <= now` — so the suite passed while the defect stood. **A passing test built on the same assumption as the code is worse than no test**, the same tautology as the account-guard check (`docs/AUDIT_2026-11-21.md` §5) and N28's circular signal count | **Closed the same day.** The cutoff is `ts_et <= now_et`; `dropped_not_yet_closed` counts labels after `now_et`. `in_rth` is re-expressed in close labels (first 09:35, last 15:55; a 09:30 label is the pre-market interval and a 16:00 label the closing auction). The boundary tests pin both edges at the exact second — at 15:30:00 the 15:30 bar is admitted with staleness 0; at 15:29:59 it is refused — and the old test that encoded the open label was **rewritten, not kept**. **Measurements unaffected:** the analysis scripts (`measure_signal_rate.py`, `test_hypotheses.py`, `compute_indicators.py`) never call `engine.bars.validate` and never lag; they time a signal at bar k's close label and enter at that close, which is exactly the close-label convention. Re-run on the corrected code the funnel is unchanged — 614 dislocated, 182 ticked (29.6%), 57 through regime+ATR, 35 removed by tick-up (61.4%), 22 pass. What *was* lagged is the live observe-only record: the 2026-11-23 cycles, including the 10:45 and 10:52 readings, computed indicators one bar behind. Those are observations of a lagged engine, not of the strategy |
+
+With N33 the register stands at **35** numbered findings.
+
 

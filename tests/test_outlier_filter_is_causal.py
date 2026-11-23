@@ -197,30 +197,62 @@ def test_empty_and_tiny_inputs_do_not_raise():
 # --------------------------------------------------------------------------
 
 def test_bars_that_have_not_closed_are_never_used():
-    """The rehearsal ran at 15:30 and ingested bars through 15:55, reporting
-    staleness_seconds: -1500. That is indicators computed from data the cycle
-    could not have seen -- guaranteed in any backdated run and reachable live
-    through clock skew.
+    """Lookahead, pinned at both edges of the completion boundary.
 
-    It also covers the partially-formed bar: a 5-minute bar read four minutes
-    in has a close that is still moving.
+    A bar labelled T carries (T-5, T] and is final at T (measured 2026-11-23;
+    the 11:35 bar was unchanged between 11:35:02 and 11:36:22). So at 15:30:00
+    exactly, the bar labelled 15:30 is the newest closed bar and must be
+    admitted; at 15:29:59 it must be refused.
+
+    The pre-N33 code read the label as a START and required `label + 5 min <=
+    now`, so it admitted 15:25 at 15:30 and refused a bar final for five
+    minutes. Its regression test asserted the same reading -- a passing test
+    built on the same assumption as the bug.
     """
     from engine.bars import validate
 
-    base = datetime(2026, 11, 20, 15, 0)
+    base = datetime(2026, 11, 20, 14, 0)
     bars = [Bar(base + timedelta(minutes=5 * i), 100, 100.2, 99.8, 100, 1e6)
-            for i in range(12)]                      # 15:00 .. 15:55
+            for i in range(24)]                      # 14:00 .. 15:55
 
-    audit = validate("US.SPY", bars, now_et=datetime(2026, 11, 20, 15, 30),
-                     max_staleness_seconds=99_999)
-
-    assert audit.newest_bar_et == "2026-11-20T15:25:00", (
-        "the 15:25 bar closes at 15:30; 15:30 onwards had not closed"
+    at_close = validate("US.SPY", bars,
+                        now_et=datetime(2026, 11, 20, 15, 30),
+                        max_staleness_seconds=99_999)
+    assert at_close.newest_bar_et == "2026-11-20T15:30:00", (
+        "the 15:30 bar covers 15:25..15:30 and is final at 15:30"
     )
-    assert audit.dropped_not_yet_closed == 6
-    assert audit.staleness_seconds is not None and audit.staleness_seconds > 0, (
+    assert at_close.dropped_not_yet_closed == 5      # 15:35 .. 15:55
+    assert at_close.staleness_seconds == 0
+
+    before_close = validate("US.SPY", bars,
+                            now_et=datetime(2026, 11, 20, 15, 29, 59),
+                            max_staleness_seconds=99_999)
+    assert before_close.newest_bar_et == "2026-11-20T15:25:00", (
+        "one second earlier the 15:30 interval has not ended"
+    )
+    assert before_close.dropped_not_yet_closed == 6
+    assert (before_close.staleness_seconds is not None
+            and before_close.staleness_seconds > 0), (
         "negative staleness means the engine read the future"
     )
+
+
+def test_the_rth_window_is_expressed_in_close_labels():
+    """09:35 is the first regular interval (09:30..09:35) and 15:55 the last
+    (15:50..15:55). A 09:30 label would be the pre-market window and a 16:00
+    label the closing auction; neither is a regular RTH bar."""
+    from engine.bars import validate
+
+    base = datetime(2026, 11, 20, 9, 30)             # a Friday
+    bars = [Bar(base + timedelta(minutes=5 * i), 100, 100.2, 99.8, 100, 1e6)
+            for i in range(79)]                      # 09:30 .. 16:00
+
+    audit = validate("US.SPY", bars,
+                     now_et=datetime(2026, 11, 20, 16, 30))
+    assert (audit.kept[0].ts_et.strftime("%H:%M"),
+            audit.kept[-1].ts_et.strftime("%H:%M")) == ("09:35", "15:55")
+    assert len(audit.kept) == 77
+    assert audit.dropped_outside_rth == 2            # 09:30 and 16:00
 
 
 def test_staleness_is_never_negative_for_any_clock():
@@ -230,19 +262,19 @@ def test_staleness_is_never_negative_for_any_clock():
 
     from engine.errors import StaleDataError
 
-    base = datetime(2026, 11, 20, 9, 30)
+    base = datetime(2026, 11, 20, 9, 35)
     bars = [Bar(base + timedelta(minutes=5 * i), 100, 100.2, 99.8, 100, 1e6)
-            for i in range(77)]
+            for i in range(77)]                      # 09:35 .. 15:55
 
     checked = refused = 0
-    for minutes in range(0, 390, 7):
+    for minutes in range(-5, 390, 7):
         now = base + timedelta(minutes=minutes)
         try:
             audit = validate("US.SPY", bars, now_et=now,
                              max_staleness_seconds=99_999)
         except StaleDataError:
-            # At 09:30 exactly, the 09:30 bar has not closed and nothing
-            # earlier exists. Refusing is the correct outcome, not a miss.
+            # At 09:30 the first bar (09:30..09:35, labelled 09:35) has not
+            # ended and nothing earlier is in RTH. Refusing is correct.
             refused += 1
             continue
         if audit.staleness_seconds is not None:

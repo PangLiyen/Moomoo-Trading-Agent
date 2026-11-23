@@ -205,15 +205,34 @@ class RiskGate:
             )
         passed.append("kill_switch_clear")
 
-        # --- cycle-gap hazard: a skipped cycle is an unmonitored position ---
+        # --- cycle-gap hazard ---
+        # The hazard is an UNMONITORED POSITION, not elapsed time. With
+        # software-only stops, a skipped cycle means an open position went
+        # unwatched, so no more are opened until cadence is restored.
+        #
+        # With a flat book there is nothing unmonitored, and blocking there
+        # would mean the first entry of a session could never be taken unless
+        # a cycle had already run minutes earlier. That is not a tightening,
+        # it is an inability to start.
+        #
+        # So the gap blocks when a position is open, and also when opening
+        # WOULD create one that the observed cadence cannot protect: if the
+        # last gap exceeded the limit, the next one may too, and a position
+        # opened now would be the thing left unwatched.
         max_gap = ks.get("max_cycle_gap_seconds")
-        if max_gap and sess.seconds_since_last_completed_cycle > float(max_gap):
+        gap = sess.seconds_since_last_completed_cycle
+        holding = any(q != 0 for q in acct.open_positions.values())
+        if max_gap and gap > float(max_gap) and holding:
             return block(
                 "CYCLE_GAP_EXCEEDED",
-                f"{sess.seconds_since_last_completed_cycle:.0f}s since the last "
-                f"completed cycle exceeds {max_gap}s. With software-only stops, "
-                f"a gap means positions were unmonitored; not opening more.",
+                f"{gap:.0f}s since the last completed cycle exceeds "
+                f"{max_gap}s while holding {dict(acct.open_positions)}. With "
+                f"software-only stops that position went unmonitored; not "
+                f"opening more until cadence is restored.",
             )
+        detail["cycle_gap_seconds"] = gap
+        detail["cycle_gap_limit_seconds"] = float(max_gap) if max_gap else None
+        detail["holding_during_gap"] = holding
         passed.append("cycle_cadence_ok")
 
         # --- data quality: refuse to act on data we cannot date ---

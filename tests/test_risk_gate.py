@@ -133,13 +133,26 @@ def test_consecutive_losses_stop_blocks(gate, cfg, clean_account, open_session):
 # The cycle-gap hazard -- specific to having no resting stop orders
 # --------------------------------------------------------------------------
 
-def test_cycle_gap_blocks_new_entries(gate, cfg, clean_account, open_session):
+def test_cycle_gap_blocks_when_a_position_was_left_unmonitored(
+        gate, cfg, clean_account, open_session):
     """Qoder Forward Mode defaults to max_concurrent_runs 1, so an overrunning
     run causes the next trigger to be SKIPPED. With software-only stops, a
-    skipped cycle is an unmonitored position. Opening more during a gap
-    compounds an exposure we already cannot see."""
+    skipped cycle while holding is an unmonitored position, and opening more
+    compounds an exposure we already cannot see.
+
+    This test originally asserted the block fired on a FLAT book too. That was
+    wrong, and it only showed up when the system had to be operated: running
+    cycles by hand at any human interval meant the first entry of every
+    session was refused, because the previous cycle was always minutes old.
+    Blocking there is an inability to start rather than a risk control. The
+    limit now keys on the hazard -- an open position -- not on elapsed time.
+    """
+    acct = replace(clean_account, open_positions={"US.XLF": 269})
     sess = replace(open_session, seconds_since_last_completed_cycle=240.0)
-    d = _ok(gate, _spy(cfg), clean_account, sess)
+    px, atr = MEASURED["US.XLE"]
+    proposal = size_position(cfg, symbol="US.XLE", price=px, atr20=atr,
+                             equity=acct.total_asset)
+    d = _ok(gate, proposal, acct, sess)
     assert d.reason_code == "CYCLE_GAP_EXCEEDED"
 
 
@@ -367,3 +380,42 @@ def test_stress_conditional_cap_is_declared_unimplemented(cfg):
     present would be the exact defect AUDIT_FINDINGS.md exists to record."""
     block = cfg.section("universe")["stress_conditional_cluster_cap"]
     assert block["implemented"] is False
+
+
+# --------------------------------------------------------------------------
+# Cycle gap, scoped to the hazard rather than to elapsed time
+# --------------------------------------------------------------------------
+
+def test_cycle_gap_blocks_while_holding(gate, cfg, clean_account, open_session):
+    """The hazard is an unmonitored position. Holding through a gap means the
+    stop went unwatched, so no more positions are opened."""
+    from dataclasses import replace
+    acct = replace(clean_account, open_positions={"US.XLF": 269})
+    sess = replace(open_session, seconds_since_last_completed_cycle=900.0)
+    px, atr = MEASURED["US.XLE"]
+    proposal = size_position(cfg, symbol="US.XLE", price=px, atr20=atr,
+                             equity=acct.total_asset)
+    d = _ok(gate, proposal, acct, sess)
+    assert d.verdict == "BLOCK"
+    assert d.reason_code == "CYCLE_GAP_EXCEEDED"
+    assert "US.XLF" in d.reason_text
+
+
+def test_cycle_gap_does_not_block_a_flat_book(gate, cfg, clean_account, open_session):
+    """With nothing held there is nothing unmonitored. Blocking here would
+    mean the first entry of a session could never be taken, which is an
+    inability to start rather than a risk control."""
+    from dataclasses import replace
+    sess = replace(open_session, seconds_since_last_completed_cycle=900.0)
+    d = _ok(gate, _spy(cfg), clean_account, sess)
+    assert d.verdict == "APPROVE", d.reason_text
+    assert d.check_detail["cycle_gap_seconds"] == 900.0
+    assert d.check_detail["holding_during_gap"] is False
+
+
+def test_the_gap_is_recorded_whether_or_not_it_blocks(gate, cfg, clean_account, open_session):
+    """A gap that did not block is still a fact about cadence, and P5 is
+    judged from the records rather than from the verdicts."""
+    d = _ok(gate, _spy(cfg), clean_account, open_session)
+    assert "cycle_gap_seconds" in d.check_detail
+    assert "cycle_gap_limit_seconds" in d.check_detail

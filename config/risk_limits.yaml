@@ -308,6 +308,12 @@ kill_switch:
   # since the last completed cycle exceeds this, treat it as a risk event.
   max_cycle_gap_seconds: 180
   on_cycle_gap_exceeded: flatten    # do not resume as if nothing happened
+  # SCOPED 2026-11-23. The hazard is an unmonitored POSITION, not elapsed
+  # time, so the gap blocks new entries only while something is held. On a
+  # flat book there is nothing unwatched, and blocking there made the first
+  # entry of every session unreachable whenever cycles were run at any human
+  # interval. The gap is recorded on every risk record either way.
+  cycle_gap_blocks_only_while_holding: true
   log_skipped_schedule_runs: true
 
 # ---------------------------------------------------------------------------

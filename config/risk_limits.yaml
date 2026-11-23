@@ -56,6 +56,11 @@ account:
 # second arrived 2.5 minutes after our last API write, so it was concurrent,
 # not an artefact of our calls.
 #
+# 2026-11-24: the actor is identified as the account operator, trading by hand
+# in the moomoo app, for both this pair and the 11-23 MU pair. The account was
+# not compromised. The control below is unchanged: an order this project did
+# not submit is still an order it cannot attribute, whoever placed it.
+#
 # This matters more than the trades themselves. The ledger's hash chain proves
 # our own records were not edited after the fact. It says nothing about orders
 # we never placed. If a second writer is active, account P&L cannot be
@@ -375,12 +380,19 @@ data_quality:
 # EXECUTION
 # ---------------------------------------------------------------------------
 execution:
-  # OBSERVE ONLY — set 2026-11-24 while 5832647 holds a position this project
-  # did not open. Every entry is refused with reason_code OBSERVE_ONLY and this
-  # reason string; exits still plan and remain executable. The cycle does not
-  # halt. The loader refuses to start if the flag is true and the reason empty.
+  # OBSERVE ONLY — restated 2026-11-24. The reason below is the real one: no
+  # demonstrated edge, on train or test, gross or net. The previous reason
+  # ("unattributed writer unresolved, incident 2026-11-23") referred to a
+  # question that is now resolved — both order pairs were the operator's own
+  # manual trades (see docs/INCIDENT_2026-11-23_FOREIGN_WRITER.md, dated
+  # disposition). Observe-only was never only about the writer, and dropping
+  # the flag on the writer's account would have been an error.
+  #
+  # The flag blocks entries only; exits still plan and remain executable, and
+  # every cycle completes. The loader refuses to start if the flag is true and
+  # the reason empty.
   observe_only: true
-  observe_only_reason: "unattributed writer unresolved, incident 2026-11-23"
+  observe_only_reason: "no demonstrated edge on train or test, gross or net; holdout observation only"
   order_type: 1                     # 1=Limit. MEASURED: enum is only {1 Limit, 3 Market}
   # MEASURED: sim_trade_input_order exposes NO time_in_force parameter at all.
   # Unfilled-order lifetime is therefore unknown until measured — we cancel our own.

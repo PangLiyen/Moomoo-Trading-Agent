@@ -138,3 +138,59 @@ this state. It is labelled as such deliberately.
 3. Whether cycles resume while a position we did not open is in the account.
    The engine has no rule for a symbol outside the universe; the guard halts
    before it would ever be asked to act on it.
+
+---
+
+## Disposition — 2026-11-24
+
+**The writer is identified: it is the operator, trading by hand in the moomoo
+app.** Both pairs — `3128921`/`3128965` (ANT, 2026-11-20) and
+`3131737`/`3131738` (MU, 2026-11-23) — were placed manually by the account
+owner. The account was never compromised.
+
+Everything above is left as written. It records what was known on the day, and
+dated documents are appended to here, not repaired.
+
+### What this confirms, and what it corrects
+
+The fingerprint inference was right on every attribute it claimed. Empty
+`text`, `order_trade_time_type: 2`, a single discretionary name outside the
+universe, appearing between our API writes — all still true, and all still
+sufficient to say these orders were **not placed by this project's code**. The
+document said exactly that and refused to go further ("What the fingerprint
+does not establish: who"). The correction is one level up: "a second actor"
+was read as "a threat". The second actor was the account owner, and the
+account-owner explanation was never listed among the candidates even though it
+was the simplest.
+
+The halt was still correct procedure. An order the project cannot account for
+is an order it cannot attribute, whoever placed it, and the rule does not bend
+for a friendly explanation given after the fact. What changes is only the
+question the halt was holding open: cycles resume, and the two pairs stay in
+`account_integrity.known_foreign_order_ids` — not because they are hostile, but
+because they are not ours.
+
+### Attribution consequences
+
+The account now mixes two kinds of trade, and the mix is permanent:
+
+- `3128921`/`3128965` — an ANT round trip, both sides manual.
+- `3131737` (filled, 1 share) / `3131738` (cancelled) — a MU position, manual,
+  still open, and outside the strategy's universe.
+
+Neither pair exists in any engine ledger as an entry, submission or exit. That
+is the subject of **N34** in `docs/AUDIT_FINDINGS.md`: a manual position the
+engine cannot see entering or leaving cannot be attributed to it, so the
+agent-only return must be computed from engine fills alone and reported beside
+account equity, never as account equity.
+
+### Still open after this disposition
+
+- Whether the MU share is left or sold is the operator's call and remains
+  unmade. It is excluded from the sizing basis each cycle while held.
+- The engine-opened-ANT question in N34: the operator reports the ANT *entry*
+  as engine-originated and the exit as manual. The ledger contains no
+  submission or fill record for either leg, so this document can record the
+  operator's account but cannot corroborate it from the chain — and says so
+  rather than choosing a version.
+

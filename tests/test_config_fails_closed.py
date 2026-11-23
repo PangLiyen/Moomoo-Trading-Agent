@@ -190,9 +190,15 @@ def test_observe_only_must_be_a_real_boolean(raw, tmp_path):
 
 
 def test_the_shipped_config_is_observe_only(cfg):
+    """The shipped answer to "may we trade?" must stay no, and say why.
+
+    This pinned the literal reason string until 2026-11-24, which made a
+    deliberate rewrite of the prose look like a rule breaking. The rule is
+    flag-off plus a stated reason; the content of the reason is a decision
+    recorded in the config, not in a test.
+    """
     assert cfg.observe_only is True
-    assert cfg.observe_only_reason == (
-        "unattributed writer unresolved, incident 2026-11-23")
+    assert cfg.observe_only_reason.strip()
 
 
 def test_the_order_list_age_bound_is_required(raw, tmp_path):

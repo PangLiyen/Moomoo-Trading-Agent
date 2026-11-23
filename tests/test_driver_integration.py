@@ -521,9 +521,13 @@ def test_observe_only_refuses_the_entry_and_records_what_it_was(repo):
     refusals = [r for r in _stages(recs, "risk")
                 if r.get("reason_code") == "OBSERVE_ONLY"]
     assert {r["symbol"] for r in refusals} == {facts["symbol"]}
+    # The record must carry the configured reason verbatim behind the driver's
+    # prefix. Asserting the link to config rather than the prose means a
+    # deliberate rewrite of the reason does not read as a regression here.
+    from engine.config import RiskConfig
+    shipped = RiskConfig.load(repo / "config" / "risk_limits.yaml")
     for r in refusals:
-        assert r["reason_text"] == (
-            "entry refused: unattributed writer unresolved, incident 2026-11-23")
+        assert r["reason_text"] == f"entry refused: {shipped.observe_only_reason}"
         # The refused signal is visible in the record, not discarded with it.
         observed = r["observed_signal"]
         assert observed["conditions"]["ask_below_threshold"] is True

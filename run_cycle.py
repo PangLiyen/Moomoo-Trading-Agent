@@ -354,6 +354,36 @@ def main() -> int:
     for w in live.warnings:
         print(f"  WARNING {w}")
 
+    # A mismatch warning says the two sources disagree; it does not say whether
+    # the disagreement is the expected one. A difference fully accounted for by
+    # positions declared foreign is normal output of a shared account. A
+    # difference anywhere else is a finding, and the two must not read alike.
+    derived_positions = live.open_quantities()
+    broker_only = {s: q for s, q in broker_positions.items()
+                   if int(q) != derived_positions.get(s, 0)}
+    ledger_only = {s: q for s, q in derived_positions.items()
+                   if broker_positions.get(s, 0) != q}
+    if broker_only or ledger_only:
+        declared = set(live.foreign_positions)
+        unexplained = {s: q for s, q in broker_only.items() if s not in declared}
+        if unexplained or ledger_only:
+            verdict, text = "UNEXPLAINED", (
+                f"broker-only {unexplained or '{}'}, ledger-only "
+                f"{ledger_only or '{}'} -- a difference at a symbol not "
+                f"declared foreign is a finding, not an expectation")
+            print(f"  POSITION MISMATCH {verdict}: {text}")
+        else:
+            verdict, text = "EXPLAINED", (
+                f"every difference is a declared foreign position "
+                f"{sorted(declared)} outside the universe")
+            print(f"  POSITION MISMATCH {verdict}: {text}")
+        led.append({"cycle_id": cycle_id, "stage": "position_check",
+                    "verdict": verdict, "reason_code": "POSITION_MISMATCH",
+                    "reason_text": text,
+                    "broker": broker_positions,
+                    "ledger_derived": derived_positions,
+                    "declared_foreign": sorted(declared)})
+
     # ---- 7. guards ----
     guard_inputs = describe_guard_inputs(acct, cfg)
     max_order_age = float(
@@ -400,6 +430,12 @@ def main() -> int:
                 "inputs": guard_inputs, "rules_hash": cfg.sha256,
                 "code_commit": code["code_commit"],
                 "engine_files_dirty": code["engine_files_dirty"]})
+    # The age is printed on the pass path, not only when it refuses: the guard
+    # record already carries it, and a bound only visible on failure reads as
+    # decoration.
+    print(f"GUARD  order list captured {order_list_captured_at:%H:%M:%S} ET, "
+          f"age {order_age:.0f}s of {max_order_age:.0f}s bound; account id, "
+          f"title and type verified")
 
     orders: list[dict[str, Any]] = []
 

@@ -143,3 +143,23 @@ committed three times in a row inside documents whose only purpose is accuracy.
 Writing "fixed" about work not yet done is the most natural dishonesty
 available to someone keeping their own scorecard, and noticing the pattern took
 an outside reader each time.
+
+---
+
+## Commit message corrections
+
+**2026-11-23 — commit `2153c64` describes work that is not in it.**
+
+Its body claims to add the executor, the four rehearsal fixes and the second
+correlation cluster. All three landed one commit earlier, in `689e5c5`. What
+`2153c64` actually contains is `.gitignore`, `docs/DDQ.md` and a rehearsal
+ledger. The message was reused verbatim from the intended commit and the two
+were not squashed.
+
+Recorded rather than rebased because the commit is already pushed and rewriting
+published history is the act the ledger's chain exists to make detectable. The
+commit that matters is checkable directly: `git show --stat 689e5c5` contains
+every engine file, and `git show --stat 2153c64` contains none.
+
+Corrected here by appending, the same rule that governs the register above: a
+document that quietly repairs itself is evidence of nothing.

@@ -2,10 +2,13 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+
+# Operator inputs, rebuilt every cycle from broker responses. Never source.
 inputs/
 acct.json
 positions.json
 orders.json
 quotes.json
-inputs/
+
+# Order intents awaiting human approval, and anything written from them.
 outbox*/

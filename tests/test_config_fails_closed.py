@@ -201,6 +201,15 @@ def test_the_shipped_config_is_observe_only(cfg):
     assert cfg.observe_only_reason.strip()
 
 
+def test_the_cycle_cadence_is_required(raw, tmp_path):
+    """N38. A cadence nobody states is a cadence nobody can audit: coverage
+    compares cycles against it, so its absence must stop the loader rather
+    than default to a number no one committed to."""
+    del raw["frequency"]["cycle_cadence_seconds"]
+    with pytest.raises(ConfigError, match="cycle_cadence_seconds"):
+        _build(raw, tmp_path)
+
+
 def test_the_order_list_age_bound_is_required(raw, tmp_path):
     """N31. The guard's only input had no age limit, and a missing bound must
     stop the loader rather than default."""

@@ -606,3 +606,54 @@ def test_a_proposal_requires_the_ask_below_the_threshold(repo):
         assert r["detail"]["live_ask"] == pytest.approx(facts["ask"])
         assert r["detail"]["live_ask"] < r["detail"]["entry_threshold"]
 
+
+
+# --------------------------------------------------------------------------
+# N38 -- the cadence audit: gaps are recorded, absence at close is named
+# --------------------------------------------------------------------------
+
+def test_a_late_slot_and_the_close_write_recorded_gaps(repo):
+    """Two wirings, one session with a hole in it.
+
+    A cycle that arrives later than the configured cadence records the gap
+    as an observation -- separate from the kill-switch block, which asks a
+    different question. The cycle at flat-by then writes session coverage
+    naming the session it actually had, not the one the schedule intended.
+    """
+    bars = _bars(repo, last_day=23, last_bar="15:50")
+    ledger = "coverage.jsonl"
+
+    first, recs = _run(repo, now="2026-11-23 10:30", ledger=ledger,
+                       positions="{}", bars=bars, quotes=_quotes(repo),
+                       order_ids=PROBE_ORDERS)
+    assert first.returncode == 0, first.stderr
+    assert not [r for r in recs if r.get("stage") == "cadence"]
+    assert not [r for r in recs if r.get("stage") == "session_coverage"]
+
+    second, recs = _run(repo, now="2026-11-23 15:50", ledger=ledger,
+                        positions="{}", bars=bars, quotes=_quotes(repo),
+                        order_ids=PROBE_ORDERS)
+    assert second.returncode == 0, second.stderr
+
+    gaps = [r for r in recs if r.get("stage") == "cadence"]
+    assert len(gaps) == 1
+    assert gaps[0]["reason_code"] == "CYCLE_GAP_EXCEEDED"
+    assert gaps[0]["inputs"]["gap_seconds"] == pytest.approx(19_200.0)
+    assert gaps[0]["inputs"]["cadence_seconds"] == 780.0
+    # The observation must not masquerade as the kill switch.
+    assert not [r for r in _stages(recs, "risk")
+                if r.get("reason_code") == "CYCLE_GAP"]
+
+    cov = [r for r in recs if r.get("stage") == "session_coverage"]
+    assert len(cov) == 1
+    c = cov[0]
+    assert c["verdict"] == "PARTIAL"
+    assert c["basis"] == "live"
+    assert c["actual_cycles"] == 2
+    assert c["expected_slots"] == 25            # (15:50-10:30) // 780 + 1
+    assert c["missing_slots"] == 23
+    assert c["longest_gap_seconds"] == pytest.approx(19_200.0)
+    # One gap, and it ends at the close cycle rather than at a missing one.
+    assert [(g["from_et"][11:], g["to_et"][11:], g["next_cycle_id"])
+            for g in c["gaps"]] == [
+        ("10:30", "15:50", "C20261123T1550")]

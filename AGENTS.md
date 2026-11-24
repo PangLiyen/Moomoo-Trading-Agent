@@ -134,7 +134,7 @@ Anything not explicitly permitted in the config is forbidden.
 | `CONTEXT.md` | Project state: what is decided, measured, and still open |
 | `runbooks/LIVE_CYCLE.md` | **The live trading procedure.** Follow it as written |
 | `engine/` | Deterministic core. No network I/O, no free text, no model |
-| `tests/` | 310 tests. The evidence for "the model cannot break the rules" |
+| `tests/` | 316 tests. The evidence for "the model cannot break the rules" |
 
 If this file and one of those disagree, those win — and fix this file.
 
@@ -142,7 +142,7 @@ If this file and one of those disagree, those win — and fix this file.
 
 ## 8. Before you change engine/ or config/
 
-Run the suite: `python3 -m pytest tests/ -q`. It should report **310 passed**.
+Run the suite: `python3 -m pytest tests/ -q`. It should report **316 passed**.
 
 If that number and the suite disagree, the number is what is stale -- the count
 is quoted in several files and drifts when tests are added. Trust pytest, then fix

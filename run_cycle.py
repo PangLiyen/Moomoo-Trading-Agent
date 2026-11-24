@@ -53,7 +53,7 @@ from engine import (  # noqa: E402
     assert_quote_fresh, build_order, crossing_limit, describe_code,
     describe_guard_inputs, distance_to_trigger_atr, engine_file_set_hash,
     epoch_ms_to_et, file_sha256, last_pinned_commit, ledger_order_ids,
-    plan_code_change, plan_exits, plan_session, record_account_snapshot,
+    compute_coverage, plan_code_change, plan_exits, plan_session, record_account_snapshot,
     record_exit, record_fill, record_submission, reconstruct, size_position,
     sort_by_distance, split_positions, validate_bars, write_intents,
     write_genesis,
@@ -384,6 +384,27 @@ def main() -> int:
                     "ledger_derived": derived_positions,
                     "declared_foreign": sorted(declared)})
 
+    # ---- cadence observation ----
+    # Separate from the kill-switch gap on purpose. The kill switch asks "is
+    # the held position unmonitored" and blocks entries while holding; this
+    # asks "did the schedule keep its own interval" and records the answer.
+    # A flat book can hide a long gap from the kill switch; it should not hide
+    # it from the record (N38).
+    cadence = float(cfg.section("frequency")["cycle_cadence_seconds"])
+    gap_seconds = sess.seconds_since_last_completed_cycle
+    if gap_seconds > cadence:
+        led.append({"cycle_id": cycle_id, "stage": "cadence",
+                    "verdict": "GAP_EXCEEDED",
+                    "reason_code": "CYCLE_GAP_EXCEEDED",
+                    "reason_text": f"{gap_seconds:.0f}s since the previous "
+                                   f"completed cycle against a "
+                                   f"{cadence:.0f}s cadence; recorded as an "
+                                   f"observation, not a block",
+                    "inputs": {"gap_seconds": round(gap_seconds, 3),
+                               "cadence_seconds": cadence}})
+        print(f"  GAP  {gap_seconds:.0f}s since the previous cycle, cadence "
+              f"{cadence:.0f}s -- recorded")
+
     # ---- 7. guards ----
     guard_inputs = describe_guard_inputs(acct, cfg)
     max_order_age = float(
@@ -624,6 +645,39 @@ def main() -> int:
                 "execution_mode": ("observe_only" if cfg.observe_only
                                    else "normal"),
                 "code_commit": code["code_commit"]})
+
+    # ---- session close: the coverage audit ----
+    # Written by the cycle at or after flat-by, when the session's obligation
+    # to be present has ended. One live record per date: a later cycle does
+    # not rewrite history, it appends its own cycle and leaves this alone.
+    if now_et.time() >= plan.flat_by_et and not any(
+            r.get("stage") == "session_coverage"
+            and r.get("trading_date") == plan.trading_date.isoformat()
+            and r.get("basis") == "live"
+            for r in led.records()):
+        coverage = compute_coverage(
+            led.records(), trading_date=plan.trading_date,
+            cadence_seconds=cadence,
+            window_end_et=datetime.combine(plan.trading_date, plan.flat_by_et),
+            basis="live",
+        )
+        led.append({"cycle_id": cycle_id, "stage": "session_coverage",
+                    "verdict": coverage.verdict,
+                    "reason_code": "SESSION_COVERAGE",
+                    "reason_text": (
+                        f"{coverage.actual_cycles} cycles against "
+                        f"{coverage.expected_slots} expected slots at "
+                        f"{cadence:.0f}s from the first cycle; "
+                        f"{len(coverage.gaps)} gap(s) over cadence, longest "
+                        f"{coverage.longest_gap_seconds:.0f}s"
+                        if coverage.gaps else
+                        f"{coverage.actual_cycles} cycles against "
+                        f"{coverage.expected_slots} expected slots at "
+                        f"{cadence:.0f}s; no gap over cadence"),
+                    **coverage.to_ledger()})
+        print(f"COVERAGE {coverage.verdict}: {coverage.actual_cycles} of "
+              f"{coverage.expected_slots} slots, {len(coverage.gaps)} gap(s), "
+              f"longest {coverage.longest_gap_seconds:.0f}s")
 
     if orders:
         out_dir = Path(args.intents_out)

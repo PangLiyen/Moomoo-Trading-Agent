@@ -49,6 +49,7 @@ _REQUIRED_NUMERIC = (
     ("fees", "min_expected_edge_to_cost_ratio"),
     ("frequency", "max_entries_per_session"),
     ("frequency", "max_orders_per_session"),
+    ("frequency", "cycle_cadence_seconds"),
     ("kill_switch", "daily_loss_halt_pct"),
     ("kill_switch", "peak_drawdown_flatten_pct"),
     ("data_quality", "max_quote_age_seconds"),

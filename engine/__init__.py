@@ -54,6 +54,10 @@ from .executor import (
     record_submission, write_intents,
 )
 from .session_state import LiveState, reconstruct
+from .coverage import (
+    COVERED, LIVE, PARTIAL, RECONSTRUCTED, SessionCoverage, completed_cycles,
+    compute_coverage,
+)
 from .untrusted import (
     PLATFORM_FIELDS, UNTRUSTED_FIELDS, Quarantined, classify,
     injection_record, quarantine, scan_items, unexpected_text_fields,
@@ -71,6 +75,7 @@ __all__ = [
     "distance_to_trigger_atr", "sort_by_distance",
     "validate_bars", "BarAudit",
     "reconstruct", "LiveState",
+    "compute_coverage", "completed_cycles", "SessionCoverage",
     "plan_session", "SessionPlan", "plan_exits", "ExitIntent",
     "build_order", "crossing_limit", "write_intents",
     "record_submission", "record_fill", "record_exit",

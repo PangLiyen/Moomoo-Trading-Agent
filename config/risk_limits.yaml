@@ -310,6 +310,13 @@ frequency:
   max_orders_per_session: 20        # includes entries, exits, cancels, replaces
   min_seconds_between_entries: 300
   no_new_entries_after_et: "15:00"
+  # The cadence the schedule is supposed to achieve: 13 minutes. Operational,
+  # not a risk limit -- but a cadence nobody states is a cadence nobody can
+  # audit. session_coverage compares completed cycles against this, and each
+  # cycle records a gap observation when it is exceeded. Distinct from
+  # kill_switch.max_cycle_gap_seconds, which is a 180s bound that blocks
+  # entries only while a position is held.
+  cycle_cadence_seconds: 780
 
 # ---------------------------------------------------------------------------
 # LOSS LIMITS AND KILL SWITCH

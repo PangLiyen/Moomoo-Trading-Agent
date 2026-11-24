@@ -281,3 +281,13 @@ numbered findings.
 
 
 
+
+---
+
+## N38 — the cadence stops at a turn boundary, 2026-11-24
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| N38 | **High** | **The cycle cadence depends on a turn boundary and stops silently at it.** On 2026-11-23 the last cycle ran at 12:59 ET. The next agent turn began after the close, so no cycle ran between 13:13 and 16:00, the runbook's 15:50 close cycle never ran, and the session-close ledger commit was not made until the following morning. The record shows 13 cycles against ~29 expected slots at 13-minute spacing from 09:41. The engine was flat for the whole session — 0 entries, 0 exits — so no position went unwatched and nothing was lost. That is luck, not coverage. **The general form is the finding:** every guard in the engine is conditional on a cycle running. The kill switch, the software stops, the staleness gates and the account guard are all statements a running cycle makes about itself; none of them executes when no cycle runs. `kill_switch.max_cycle_gap_seconds: 180` is a **safety** property — it bounds how stale a decision may be when one is taken — and is measured by a running cycle. There is no **liveness** property anywhere in the system: nothing asserts that a cycle should have started and did. The system's silence is therefore indistinguishable from its contentment, and the only observer that noticed was a human reading a clock the next morning | **Open.** The remedy is a scheduler outside the process — Cloud Agents Forward Mode — which is the same work as the 30% Qoder criterion in `docs/SCORING_PLAN.md` section 2 ("Nothing deployed. No Cloud Agents runtime … no Forward Mode schedule"). The scoring remedy and this finding are one piece of work, and until it exists the honest description is that the cadence is a human action. **What is implemented here is the audit, not the guarantee.** `engine/coverage.py` derives expected slots from the first completed cycle, the plan's flat-by and the configured `frequency.cycle_cadence_seconds: 780`, and lists every interval over cadence — including the tail from the last cycle to flat-by, which is exactly the gap that matters when the close cycle is the one missing. The cycle at flat-by appends one `session_coverage` record; any cycle whose elapsed gap exceeds the cadence appends a `cadence` observation, deliberately distinct from the kill-switch block. `analysis/backfill_session_coverage.py` appended the 2026-11-23 record with `basis: reconstructed` and the ledger commit it was computed from, so the hole is in the chain rather than only in a commit message. The audit cannot make a cycle happen: a process that is not running cannot report that it is not running |
+
+With N38 the register stands at **40** numbered findings.

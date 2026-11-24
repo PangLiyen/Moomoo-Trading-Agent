@@ -53,6 +53,7 @@ ENGINE_FILES = (
     "engine/signal.py",
     "engine/bars.py",
     "engine/session_state.py",
+    "engine/coverage.py",
     "engine/untrusted.py",
     "engine/timeutil.py",
     "engine/report.py",

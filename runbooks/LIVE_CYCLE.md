@@ -212,7 +212,58 @@ Once per session, not per cycle.
 
 ---
 
-## 7. Failure modes
+## 7. Dashboard
+
+One command rebuilds the whole evidence page from the ledger:
+
+```
+uv run --offline --with pyyaml python tools/build_dashboard.py \
+    --ledger logs/decisions_live.jsonl --out reports/dashboard.html
+```
+
+It reads the ledger, `config/risk_limits.yaml` (starting equity, default
+fee) and `docs/AUDIT_FINDINGS.md`. It writes one HTML file with no network
+references of any kind — no CDN, no remote fonts, no scripts — so it opens
+on a disconnected machine. Exit code 0 means the chain verified; 1 means it
+did not and the file contains only the failure.
+
+What each panel claims:
+
+| Panel | Claim | Source |
+|---|---|---|
+| a | engine-only equity beside account equity; the residual is everything the engine did not do | `agent_attribution.attribute` + `account_snapshot` |
+| b | for each (cycle, symbol), the first entry condition that failed, in the rule's order | `signal.conditions`, canonical order |
+| c | d_atr = (close − threshold)/ATR20 per symbol per cycle | `signal.detail` |
+| d | actual cycles against expected slots at the configured cadence, with every recorded gap | `session_coverage` record |
+| e | chain intact, record count, tip, every `code_change` and `incident` record | `Ledger.verify_report` + those stages |
+| f | counts from the findings register | `docs/AUDIT_FINDINGS.md` (prose, not a record) |
+
+What it deliberately does not show:
+
+- **No line across a gap.** Consecutive points are joined only when no
+  recorded gap lies between them; with no coverage record, points are drawn
+  without lines and the panel says why. A continuous line across 12:59–15:50
+  would assert that the engine was watching.
+- **No interpolation or smoothing.** A d_atr the record lacks is absent from
+  the plot and counted in the panel note, not estimated.
+- **No decomposition of the residual.** Manual P&L, commissions and marks
+  are mixed in it; the ledger cannot split them, so it does not try.
+- **Nothing at all when verification fails.** The page renders the failure
+  and no panel, because every panel would describe a file of unknown
+  provenance.
+- **Only the latest date with a completed cycle** in panels a–d; the header
+  names the date. A multi-day ledger is not pooled into one series.
+
+Known open discrepancy: panel f counts 41 distinct register IDs while the
+register's prose says 40. The panel prints both. Do not "fix" it by
+suppressing one: either the prose or the register needs correcting by hand.
+
+Regenerate the committed page after a session only if you intend it as the
+session's snapshot; the page records the ledger tip and build time.
+
+---
+
+## 8. Failure modes
 
 | Symptom | Meaning | Do |
 |---|---|---|

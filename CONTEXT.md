@@ -102,8 +102,9 @@ docs/DECISION_LOG_SCHEMA.md    ledger record format
 docs/SESSION_00_PROBE.md       the capability-probe runbook
 docs/COMPETITION_BRIEF.md      scoring, field, timeline, team structure
 analysis/                      5-min bar data + compute_indicators.py
+tools/build_dashboard.py       ledger -> one self-contained evidence page
 engine/                        deterministic core (see below)
-tests/                         316 tests; the evidence for the claim
+tests/                         322 tests; the evidence for the claim
 ```
 
 `engine/`, strictest layer first. Nothing lower imports anything higher.
